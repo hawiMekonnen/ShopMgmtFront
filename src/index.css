@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-ethiopian-green: #006039;
+  --color-ethiopian-green-light: #058550;
+  --color-ethiopian-gold: #e2b007;
+  --color-ethiopian-yellow: #f1c40f;
+  --color-ethiopian-red: #d62d20;
+}
+
+/* Custom background animations & toast elements */
+body {
+  background-color: #f8fafc;
+  color: #1e293b;
+  font-family: var(--font-sans);
+}
+
+.font-mono {
+  font-family: var(--font-mono), monospace;
+}
+
+/* Custom transitions and scrollbar styled */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 96, 57, 0.2) transparent;
+}
