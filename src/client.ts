@@ -1,4 +1,14 @@
-import { Category, Material, MaterialDetail, StockBatch, DashboardStats } from "./types";
+import {
+  Category,
+  Material,
+  MaterialDetail,
+  StockBatch,
+  DashboardStats,
+  AuthSession,
+  MaterialRequest,
+  Alert,
+} from "./types";
+import { normalizeRequestStatus } from "./requestStatus";
 
 export class ApiError extends Error {
   status: number;
@@ -16,12 +26,35 @@ export class ApiError extends Error {
   }
 }
 
+function getToken(): string | null {
+  return sessionStorage.getItem("authToken");
+}
+
+let onUnauthorized: (() => void) | null = null;
+
+/** Called when API returns 401 — typically expired or missing JWT. */
+export function setOnUnauthorized(handler: (() => void) | null) {
+  onUnauthorized = handler;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const headers = {
+  const token = getToken();
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(options?.headers || {}),
+    ...(options?.headers as Record<string, string> | undefined),
   };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const response = await fetch(url, { ...options, headers });
+  if (response.status === 401) {
+    sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("authRole");
+    sessionStorage.removeItem("authEmail");
+    sessionStorage.removeItem("authShopId");
+    onUnauthorized?.();
+  }
   if (!response.ok) {
     let title = "API Error";
     let detail = "An unknown error has occurred.";
@@ -42,9 +75,6 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-// -------------------------------------------------------
-// Adapters: map C# PascalCase primary keys to frontend `id`
-// -------------------------------------------------------
 function adaptCategory(raw: any): Category {
   return {
     id: raw.categoryId ?? raw.id,
@@ -53,63 +83,256 @@ function adaptCategory(raw: any): Category {
     materialCount: raw.materialCount,
   };
 }
+
 function adaptMaterial(raw: any): Material {
   return {
     id: raw.materialId ?? raw.id,
+    partNumber: raw.partNumber ?? "",
     name: raw.name,
+    description: raw.description,
+    aircraftTypes: raw.aircraftTypes,
     categoryId: raw.categoryId,
     categoryName: raw.categoryName,
     unit: raw.unit,
     unitPrice: raw.unitPrice,
+    minStock: raw.minStock,
     onHand: raw.onHand ?? 0,
+    blocked: raw.blocked,
+    reserved: raw.reserved,
+    available: raw.available ?? raw.onHand ?? 0,
     stockValue: raw.stockValue ?? 0,
   };
 }
+
 function adaptMaterialDetail(raw: any): MaterialDetail {
   return {
     id: raw.materialId ?? raw.id,
+    partNumber: raw.partNumber ?? "",
     name: raw.name,
+    description: raw.description,
+    aircraftTypes: raw.aircraftTypes,
     categoryId: raw.categoryId,
     categoryName: raw.categoryName ?? "",
     unit: raw.unit,
     unitPrice: raw.unitPrice,
+    minStock: raw.minStock,
     onHand: raw.onHand ?? 0,
+    blocked: raw.blocked,
+    reserved: raw.reserved,
+    available: raw.available ?? raw.onHand ?? 0,
     stockValue: raw.stockValue ?? 0,
     recentBatches: (raw.recentBatches ?? []).map(adaptBatch),
   };
 }
+
 function adaptBatch(raw: any): StockBatch {
   return {
     batchId: raw.batchId,
     materialId: raw.materialId,
+    shopId: raw.shopId,
     quantityReceived: raw.quantityReceived,
     costTotal: raw.costTotal,
     expiryDate: raw.expiryDate,
     receivedAt: raw.receivedAt,
+    status: raw.status,
+    quarantineReason: raw.quarantineReason,
+  };
+}
+
+function adaptRequest(raw: any): MaterialRequest {
+  return {
+    requestId: raw.requestId,
+    materialId: raw.materialId,
+    materialName: raw.materialName,
+    partNumber: raw.partNumber,
+    shopId: raw.shopId,
+    shopName: raw.shopName,
+    requestedByUserId: raw.requestedByUserId,
+    requestedByName: raw.requestedByName,
+    quantity: raw.quantity,
+    aircraftOrWorkOrder: raw.aircraftOrWorkOrder,
+    status: normalizeRequestStatus(raw.status),
+    notes: raw.notes,
+    createdAt: raw.createdAt,
   };
 }
 
 export const api = {
-  // Categories
-  getCategories: () => request<any[]>("/api/categories").then(items => items.map(adaptCategory)),
+  login: async (email: string, password: string): Promise<AuthSession> => {
+    const res = await request<any>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    const session: AuthSession = {
+      token: res.token,
+      email: res.email,
+      role: res.role,
+      shopId: res.shopId,
+    };
+    sessionStorage.setItem("authToken", session.token);
+    sessionStorage.setItem("authRole", session.role);
+    sessionStorage.setItem("authEmail", session.email);
+    if (session.shopId) sessionStorage.setItem("authShopId", String(session.shopId));
+    return session;
+  },
+
+  logout: () => {
+    sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("authRole");
+    sessionStorage.removeItem("authEmail");
+    sessionStorage.removeItem("authShopId");
+  },
+
+  getSession: (): AuthSession | null => {
+    const token = sessionStorage.getItem("authToken");
+    if (!token) return null;
+    return {
+      token,
+      email: sessionStorage.getItem("authEmail") ?? "",
+      role: sessionStorage.getItem("authRole") ?? "",
+      shopId: sessionStorage.getItem("authShopId")
+        ? parseInt(sessionStorage.getItem("authShopId")!, 10)
+        : undefined,
+    };
+  },
+
+  getCategories: () => request<any[]>("/api/categories").then((items) => items.map(adaptCategory)),
   getCategory: (id: number) => request<any>(`/api/categories/${id}`).then(adaptCategory),
-  createCategory: (data: Partial<Category>) => request<any>("/api/categories", { method: "POST", body: JSON.stringify(data) }).then(adaptCategory),
-  updateCategory: (id: number, data: Partial<Category>) => request<any>(`/api/categories/${id}`, { method: "PUT", body: JSON.stringify(data) }).then(adaptCategory),
+  createCategory: (data: Partial<Category>) =>
+    request<any>("/api/categories", { method: "POST", body: JSON.stringify(data) }).then(adaptCategory),
+  updateCategory: (id: number, data: Partial<Category>) =>
+    request<any>(`/api/categories/${id}`, { method: "PUT", body: JSON.stringify(data) }).then(adaptCategory),
   deleteCategory: (id: number) => request<void>(`/api/categories/${id}`, { method: "DELETE" }),
 
-  // Materials
-  getMaterials: () => request<any[]>("/api/materials").then(items => items.map(adaptMaterial)),
-  getMaterial: (id: number) => request<any>(`/api/materials/${id}`).then(adaptMaterialDetail),
-  getInventory: (id: number) => request<{ materialId: number; onHand: number; stockValue: number }>(`/api/materials/${id}/inventory`),
-  createMaterial: (data: { name: string; categoryId: number; unit: string; unitPrice: number }) => request<any>("/api/materials", { method: "POST", body: JSON.stringify(data) }).then(adaptMaterialDetail),
-  updateMaterial: (id: number, data: { name: string; categoryId: number; unit: string; unitPrice: number }) => request<any>(`/api/materials/${id}`, { method: "PUT", body: JSON.stringify(data) }).then(adaptMaterialDetail),
+  getMaterials: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<any[]>(`/api/materials${q}`).then((items) => items.map(adaptMaterial));
+  },
+
+  searchMaterials: (params: { partNumber?: string; aircraft?: string; q?: string; shopId?: number }) => {
+    const search = new URLSearchParams();
+    if (params.partNumber) search.set("partNumber", params.partNumber);
+    if (params.aircraft) search.set("aircraft", params.aircraft);
+    if (params.q) search.set("q", params.q);
+    if (params.shopId) search.set("shopId", String(params.shopId));
+    return request<any[]>(`/api/materials/search?${search}`).then((items) => items.map(adaptMaterial));
+  },
+
+  getMaterial: (id: number, shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<any>(`/api/materials/${id}${q}`).then(adaptMaterialDetail);
+  },
+
+  getInventory: (id: number, shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<{ materialId: number; onHand: number; available: number; stockValue: number }>(
+      `/api/materials/${id}/inventory${q}`
+    );
+  },
+
+  createMaterial: (data: {
+    partNumber: string;
+    name: string;
+    categoryId: number;
+    unit: string;
+    unitPrice: number;
+    description?: string;
+    aircraftTypes?: string;
+    minStock?: number;
+    defaultShopId?: number;
+  }) => request<any>("/api/materials", { method: "POST", body: JSON.stringify(data) }).then(adaptMaterialDetail),
+
+  updateMaterial: (
+    id: number,
+    data: {
+      partNumber: string;
+      name: string;
+      categoryId: number;
+      unit: string;
+      unitPrice: number;
+      description?: string;
+      aircraftTypes?: string;
+      minStock?: number;
+      defaultShopId?: number;
+    }
+  ) => request<any>(`/api/materials/${id}`, { method: "PUT", body: JSON.stringify(data) }).then(adaptMaterialDetail),
+
   deleteMaterial: (id: number) => request<void>(`/api/materials/${id}`, { method: "DELETE" }),
 
-  // Stock Batches
-  getBatches: (materialId: number) => request<any[]>(`/api/materials/${materialId}/batches`).then(items => items.map(adaptBatch)),
-  receiveStock: (materialId: number, data: { quantityReceived: number; costTotal: number; expiryDate?: string; receivedAt: string }) => request<any>(`/api/materials/${materialId}/batches`, { method: "POST", body: JSON.stringify(data) }).then(adaptBatch),
-  deleteBatch: (materialId: number, batchId: number) => request<void>(`/api/materials/${materialId}/batches/${batchId}`, { method: "DELETE" }),
+  getBatches: (materialId: number) =>
+    request<any[]>(`/api/materials/${materialId}/batches`).then((items) => items.map(adaptBatch)),
 
-  // Dashboard
+  receiveStock: (
+    materialId: number,
+    data: { quantityReceived: number; costTotal: number; expiryDate?: string; receivedAt: string; shopId?: number }
+  ) =>
+    request<any>(`/api/materials/${materialId}/batches`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }).then(adaptBatch),
+
+  deleteBatch: (materialId: number, batchId: number) =>
+    request<void>(`/api/materials/${materialId}/batches/${batchId}`, { method: "DELETE" }),
+
   getDashboardStats: () => request<DashboardStats>("/api/dashboard"),
+
+  getMaterialRequests: (shopId?: number, status?: string) => {
+    const search = new URLSearchParams();
+    if (shopId) search.set("shopId", String(shopId));
+    if (status) search.set("status", status);
+    const q = search.toString() ? `?${search}` : "";
+    return request<any[]>(`/api/materialrequests${q}`).then((items) => items.map(adaptRequest));
+  },
+
+  submitMaterialRequest: (data: {
+    materialId: number;
+    shopId: number;
+    quantity: number;
+    aircraftOrWorkOrder?: string;
+    notes?: string;
+  }) =>
+    request<any>("/api/materialrequests", { method: "POST", body: JSON.stringify(data) }).then(adaptRequest),
+
+  approveRequest: (id: number) =>
+    request<any>(`/api/materialrequests/${id}/approve`, { method: "PATCH" }).then(adaptRequest),
+
+  markRequestReady: (id: number) =>
+    request<any>(`/api/materialrequests/${id}/ready`, { method: "PATCH" }).then(adaptRequest),
+
+  issueRequest: (id: number, collectedByUserId: number, flightNumber?: string) =>
+    request<any>(`/api/materialrequests/${id}/issue`, {
+      method: "PATCH",
+      body: JSON.stringify({ collectedByUserId, flightNumber }),
+    }).then(adaptRequest),
+
+  cancelRequest: (id: number, notes?: string) =>
+    request<any>(`/api/materialrequests/${id}/cancel`, {
+      method: "PATCH",
+      body: JSON.stringify({ notes }),
+    }).then(adaptRequest),
+
+  getAlerts: () => request<any[]>("/api/alerts").then((items) => items as Alert[]),
+
+  resolveAlert: (id: number, note: string) =>
+    request<void>(`/api/alerts/${id}/resolve`, {
+      method: "PATCH",
+      body: JSON.stringify({ resolvedNote: note, resolvedBy: 1 }),
+    }),
+
+  recordReturn: (data: {
+    materialId: number;
+    shopId: number;
+    quantity: number;
+    remarks: string;
+    usageId?: number;
+    batchId?: number;
+  }) => request<any>("/api/materialreturns", { method: "POST", body: JSON.stringify(data) }),
+
+  getProcurementActions: () => request<any[]>("/api/procurement/actions"),
+
+  markReorder: (materialId: number, reorderNote?: string) =>
+    request<void>(`/api/procurement/materials/${materialId}/reorder`, {
+      method: "PATCH",
+      body: JSON.stringify({ reorderNote }),
+    }),
 };

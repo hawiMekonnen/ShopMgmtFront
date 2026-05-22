@@ -24,15 +24,36 @@ import {
   Loader2,
   X,
   PlusCircle,
-  Filter
+  Filter,
+  LogOut,
+  ClipboardList,
+  Bell,
+  Package
 } from "lucide-react";
-import { api, ApiError } from "./client";
-import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState } from "./types";
+import { api, ApiError, setOnUnauthorized } from "./client";
+import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState, AuthSession } from "./types";
 import ToastContainer, { ToastMessage } from "./components/Toast";
+import LoginView from "./components/LoginView";
+import AppSidebar from "./components/AppSidebar";
+import AccessDenied from "./components/AccessDenied";
+import { MaterialSearchView, MaterialRequestsView, AlertsView, ProcurementView } from "./components/AmosWorkflowViews";
+import {
+  canAccessView,
+  getDefaultView,
+  getHomeView,
+  getRolePermissions,
+  type RolePermissions,
+} from "./roleConfig";
 
 export default function App() {
-  // Navigation Routing State
-  const [currentView, setCurrentView] = useState<ViewState>({ type: "dashboard" });
+  const [session, setSession] = useState<AuthSession | null>(() => api.getSession());
+  const [pendingRequestMaterialId, setPendingRequestMaterialId] = useState<number | null>(null);
+
+  // Navigation Routing State — role-based home
+  const [currentView, setCurrentView] = useState<ViewState>(() => {
+    const s = api.getSession();
+    return s ? getDefaultView(s.role) : { type: "dashboard" };
+  });
 
   // Core Data Lists
   const [categories, setCategories] = useState<Category[]>([]);
@@ -95,10 +116,12 @@ export default function App() {
     } catch (error) {
       setConnectionStatus("unreachable");
       if (error instanceof ApiError) {
+        if (error.status === 401) {
+          return null;
+        }
         if (errorHandler) {
           errorHandler(error);
         } else {
-          // Standard Toast feedback
           addToast("error", error.title, error.detail || "Something went wrong. Please check your inputs or network connection.");
         }
       } else {
@@ -127,21 +150,68 @@ export default function App() {
     }
   }, [executeApiCall]);
 
-  // Combine load ops
+  // Combine load ops (dashboard + catalog screens only)
   const refreshAllContext = useCallback(async () => {
     setLoading(true);
     await Promise.all([
       loadGlobalDashboardStats(),
       loadAllCategories(),
-      loadAllMaterials()
+      loadAllMaterials(),
     ]);
     setLoading(false);
   }, [loadGlobalDashboardStats, loadAllCategories, loadAllMaterials]);
 
-  // Setup periodic live update cycle (required to keep 12s live updates like old Blazor)
+  /** Load only what the current screen needs — avoids technician hitting /api/dashboard. */
+  const loadDataForView = useCallback(
+    async (viewType: ViewState["type"]) => {
+      if (!session) return;
+      switch (viewType) {
+        case "dashboard":
+          await loadGlobalDashboardStats();
+          break;
+        case "materials":
+        case "material-new":
+        case "material-edit":
+        case "material-detail":
+        case "material-receive":
+          setLoading(true);
+          await Promise.all([loadAllCategories(), loadAllMaterials()]);
+          setLoading(false);
+          break;
+        case "categories":
+          setLoading(true);
+          await loadAllCategories();
+          setLoading(false);
+          break;
+        default:
+          break;
+      }
+    },
+    [session, loadGlobalDashboardStats, loadAllCategories, loadAllMaterials]
+  );
+
+  const permissions = session ? getRolePermissions(session.role) : null;
+
   useEffect(() => {
-    refreshAllContext();
-  }, [refreshAllContext]);
+    setOnUnauthorized(() => {
+      setSession(null);
+      addToast("warning", "Session expired", "Please sign in again.");
+    });
+    return () => setOnUnauthorized(null);
+  }, [addToast]);
+
+  useEffect(() => {
+    if (session) {
+      loadDataForView(currentView.type);
+    }
+  }, [session, currentView.type, loadDataForView]);
+
+  // Redirect if user lands on a view their role cannot access
+  useEffect(() => {
+    if (session && !canAccessView(session.role, currentView)) {
+      setCurrentView(getDefaultView(session.role));
+    }
+  }, [session, currentView]);
 
   useEffect(() => {
     if (autoRefresh && (currentView.type === "materials" || currentView.type === "dashboard")) {
@@ -164,15 +234,28 @@ export default function App() {
 
   // Navigate utility with automated clear state
   const navigate = (view: ViewState) => {
+    if (session && !canAccessView(session.role, view)) {
+      addToast("warning", "Access restricted", `That screen is not available for ${session.role} users.`);
+      setCurrentView(getDefaultView(session.role));
+      return;
+    }
     setCurrentView(view);
     setSearchQuery("");
     setSelectedCategoryFilter("all");
     setCatFieldErrors({});
-    // Reload state context is extremely useful during navigation updates
-    if (view.type === "dashboard" || view.type === "materials" || view.type === "categories") {
-      refreshAllContext();
-    }
   };
+
+  const handleLogin = (s: AuthSession) => {
+    setSession(s);
+    setCurrentView(getDefaultView(s.role));
+  };
+
+  if (!session) {
+    return <LoginView onLogin={handleLogin} />;
+  }
+
+  const viewAllowed = canAccessView(session.role, currentView);
+  const goHome = () => navigate(getHomeView(session.role));
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 transition-colors duration-150">
@@ -180,7 +263,7 @@ export default function App() {
       {/* 3. App Shell Header */}
       <header className="sticky top-0 z-40 bg-[#006039] text-white shadow-md border-b-2 border-[#e2b007]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate({ type: "dashboard" })}>
+          <div className="flex items-center gap-3 cursor-pointer" onClick={goHome}>
             <div className="bg-[#e2b007] text-[#006039] p-1.5 rounded-lg flex items-center justify-center font-bold">
               <Boxes className="w-6 h-6 animate-pulse" />
             </div>
@@ -193,6 +276,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <span className="text-[10px] bg-black/25 px-2 py-0.5 rounded font-mono">{session.role}</span>
+            <button
+              type="button"
+              onClick={() => { api.logout(); setSession(null); }}
+              className="text-xs flex items-center gap-1 text-emerald-100 hover:text-white"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" /> Logout
+            </button>
             {/* Live Indicator Switch and Refresh state */}
             <div className="flex items-center gap-2">
               <span className="text-xs text-emerald-100 hidden md:inline">Auto-Polling (12s)</span>
@@ -234,76 +326,30 @@ export default function App() {
       {/* Main Container Wrapper */}
       <div className="flex-1 max-w-7xl w-full mx-auto flex flex-col md:flex-row gap-0 sm:gap-4 md:p-6 p-3">
         
-        {/* Sidebar Component */}
-        <aside className="w-full md:w-64 md:shrink-0 flex flex-col gap-2 mb-4 md:mb-0">
-          <nav className="bg-white rounded-xl shadow-xs border border-slate-200 p-2 flex flex-row md:flex-col gap-1 overflow-x-auto md:overflow-visible">
-            <button
-              id="sidebar-nav-dashboard"
-              onClick={() => navigate({ type: "dashboard" })}
-              className={`flex items-center gap-2.5 px-4 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap w-full focus:outline-none ${
-                currentView.type === "dashboard"
-                  ? "bg-[#006039]/10 text-[#006039] border-r-4 border-[#006039]"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              <LayoutDashboard className="w-4 h-4 shrink-0" />
-              <span>Dashboard Overview</span>
-            </button>
-            <button
-              id="sidebar-nav-materials"
-              onClick={() => navigate({ type: "materials" })}
-              className={`flex items-center gap-2.5 px-4 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap w-full focus:outline-none ${
-                currentView.type === "materials" || currentView.type.startsWith("material-")
-                  ? "bg-[#006039]/10 text-[#006039] border-r-4 border-[#006039]"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              <Boxes className="w-4 h-4 shrink-0" />
-              <span>Materials Inventory</span>
-            </button>
-            <button
-              id="sidebar-nav-categories"
-              onClick={() => navigate({ type: "categories" })}
-              className={`flex items-center gap-2.5 px-4 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap w-full focus:outline-none ${
-                currentView.type === "categories"
-                  ? "bg-[#006039]/10 text-[#006039] border-r-4 border-[#006039]"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              <Layers className="w-4 h-4 shrink-0" />
-              <span>Stock Categories</span>
-            </button>
-          </nav>
-
-          {/* Ethiopian Airlines Brand Statement and dynamic time stamp info */}
-          <div className="bg-slate-100 rounded-xl p-4 border border-slate-200 mt-auto hidden md:block">
-            <div className="flex gap-2 items-start text-xs text-slate-500">
-              <Info className="w-4 h-4 shrink-0 mt-0.5 text-emerald-700" />
-              <div>
-                <p className="font-semibold text-slate-700">Aviation Standard</p>
-                <p className="mt-1 leading-relaxed">Ensure safe storage codes & flight-ready certifications on aerospace batches.</p>
-              </div>
-            </div>
-            {lastUpdated && (
-              <p className="text-[10px] text-slate-400 mt-3 font-mono">Last refreshed: {lastUpdated}</p>
-            )}
-          </div>
-        </aside>
+        <AppSidebar
+          session={session}
+          currentView={currentView}
+          onNavigate={navigate}
+          lastUpdated={lastUpdated}
+        />
 
         {/* 4. Main Page Body Outlet */}
         <main className="flex-1 min-w-0">
-          
-          {/* View Dispatcher */}
-          {currentView.type === "dashboard" && (
+          {!viewAllowed ? (
+            <AccessDenied role={session.role} attempted={currentView.type} onGoHome={goHome} />
+          ) : (
+          <>
+          {currentView.type === "dashboard" && permissions && (
             <DashboardView
               stats={dashboardStats}
               loading={loading}
               onNavigate={navigate}
               onRefresh={refreshAllContext}
+              permissions={permissions}
             />
           )}
 
-          {currentView.type === "materials" && (
+          {currentView.type === "materials" && permissions && (
             <MaterialsListView
               materials={materials}
               categories={categories}
@@ -316,10 +362,12 @@ export default function App() {
               onNavigate={navigate}
               onRefresh={loadAllMaterials}
               addToast={addToast}
+              canManageCatalog={permissions.canManageCatalog}
+              canReceiveStock={permissions.canReceiveStock}
             />
           )}
 
-          {currentView.type === "material-new" && (
+          {currentView.type === "material-new" && permissions?.canManageCatalog && (
             <MaterialFormView
               categories={categories}
               onNavigate={navigate}
@@ -328,7 +376,7 @@ export default function App() {
             />
           )}
 
-          {currentView.type === "material-edit" && (
+          {currentView.type === "material-edit" && permissions?.canManageCatalog && (
             <MaterialFormView
               materialId={currentView.id}
               categories={categories}
@@ -338,17 +386,20 @@ export default function App() {
             />
           )}
 
-          {currentView.type === "material-detail" && (
+          {currentView.type === "material-detail" && permissions && (
             <MaterialDetailView
               materialId={currentView.id}
               onNavigate={navigate}
               addToast={addToast}
               executeApiCall={executeApiCall}
               setConfirmDialog={setConfirmDialog}
+              canManageCatalog={permissions.canManageCatalog}
+              canReceiveStock={permissions.canReceiveStock}
+              canDeleteMaterial={permissions.canDeleteMaterial}
             />
           )}
 
-          {currentView.type === "material-receive" && (
+          {currentView.type === "material-receive" && permissions?.canReceiveStock && (
             <ReceiveStockView
               materialId={currentView.id}
               onNavigate={navigate}
@@ -356,6 +407,34 @@ export default function App() {
               executeApiCall={executeApiCall}
               setConfirmDialog={setConfirmDialog}
             />
+          )}
+
+          {currentView.type === "material-search" && (
+            <MaterialSearchView
+              session={session}
+              addToast={addToast}
+              onRequest={(materialId) => {
+                setPendingRequestMaterialId(materialId);
+                navigate({ type: "material-requests" });
+              }}
+            />
+          )}
+
+          {currentView.type === "material-requests" && (
+            <MaterialRequestsView
+              session={session}
+              addToast={addToast}
+              executeApiCall={executeApiCall}
+              initialMaterialId={pendingRequestMaterialId}
+            />
+          )}
+
+          {currentView.type === "alerts" && (
+            <AlertsView executeApiCall={executeApiCall} role={session.role} />
+          )}
+
+          {currentView.type === "procurement" && (
+            <ProcurementView executeApiCall={executeApiCall} />
           )}
 
           {currentView.type === "categories" && (
@@ -368,6 +447,8 @@ export default function App() {
               setConfirmDialog={setConfirmDialog}
             />
           )}
+          </>
+          )}
 
         </main>
       </div>
@@ -377,7 +458,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 text-center sm:flex sm:justify-between sm:items-center">
           <p>ET-SM © 2026 Flight Operations Stock Ledger</p>
           <div className="flex items-center justify-center gap-4 mt-2 sm:mt-0">
-            <span>Terminal: ADDIS_BOLO_HQ</span>
+            <span>Terminal: ADDIS_BOLE_HQ</span>
             <span>Refreshes: 12,000ms</span>
           </div>
         </div>
@@ -433,9 +514,10 @@ interface DashboardViewProps {
   loading: boolean;
   onNavigate: (view: ViewState) => void;
   onRefresh: () => void;
+  permissions: RolePermissions;
 }
 
-function DashboardView({ stats, loading, onNavigate, onRefresh }: DashboardViewProps) {
+function DashboardView({ stats, loading, onNavigate, onRefresh, permissions }: DashboardViewProps) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -541,33 +623,67 @@ function DashboardView({ stats, loading, onNavigate, onRefresh }: DashboardViewP
           <p className="text-xs text-slate-500">Fast access to active catalog logging and receive sequences</p>
           
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <button
-              id="dash-cta-new-material"
-              onClick={() => onNavigate({ type: "material-new" })}
-              className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left focus:outline-none focus:ring-1 focus:ring-[#006039]"
-            >
-              <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
-                <Plus className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="font-semibold text-sm text-slate-900">Add New Material</h4>
-                <p className="text-xs text-slate-400 mt-0.5">Register critical aviation spare parts, lubricants or safety components.</p>
-              </div>
-            </button>
+            {permissions.canManageCatalog && (
+              <button
+                id="dash-cta-new-material"
+                onClick={() => onNavigate({ type: "material-new" })}
+                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left focus:outline-none focus:ring-1 focus:ring-[#006039]"
+              >
+                <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
+                  <Plus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-semibold text-sm text-slate-900">Add New Material</h4>
+                  <p className="text-xs text-slate-400 mt-0.5">Register critical aviation spare parts, lubricants or safety components.</p>
+                </div>
+              </button>
+            )}
 
-            <button
-              id="dash-cta-categories"
-              onClick={() => onNavigate({ type: "categories" })}
-              className="flex items-start gap-3 p-4 border border-slate-200 hover:border-amber-600 hover:bg-amber-50/20 rounded-xl transition-all text-left focus:outline-none focus:ring-1 focus:ring-amber-500"
-            >
-              <div className="bg-amber-100 text-[#e2b007] p-2.5 rounded-lg">
-                <Layers className="w-5 h-5 text-amber-700" />
-              </div>
-              <div>
-                <h4 className="font-semibold text-sm text-slate-900">Configure Divisions</h4>
-                <p className="text-xs text-slate-400 mt-0.5">Define material groups, safety rules, and warehouse layouts.</p>
-              </div>
-            </button>
+            {permissions.canViewRequests && (
+              <button
+                onClick={() => onNavigate({ type: "material-requests" })}
+                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left"
+              >
+                <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
+                  <ClipboardList className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-semibold text-sm text-slate-900">Request queue</h4>
+                  <p className="text-xs text-slate-400 mt-0.5">Approve, pick, and release stock to shops.</p>
+                </div>
+              </button>
+            )}
+
+            {permissions.canManageCategories && (
+              <button
+                id="dash-cta-categories"
+                onClick={() => onNavigate({ type: "categories" })}
+                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-amber-600 hover:bg-amber-50/20 rounded-xl transition-all text-left focus:outline-none focus:ring-1 focus:ring-amber-500"
+              >
+                <div className="bg-amber-100 text-[#e2b007] p-2.5 rounded-lg">
+                  <Layers className="w-5 h-5 text-amber-700" />
+                </div>
+                <div>
+                  <h4 className="font-semibold text-sm text-slate-900">Configure Divisions</h4>
+                  <p className="text-xs text-slate-400 mt-0.5">Define material groups, safety rules, and warehouse layouts.</p>
+                </div>
+              </button>
+            )}
+
+            {permissions.canSearchAndRequest && (
+              <button
+                onClick={() => onNavigate({ type: "material-search" })}
+                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left"
+              >
+                <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
+                  <Search className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-semibold text-sm text-slate-900">Search & request</h4>
+                  <p className="text-xs text-slate-400 mt-0.5">Technician counter — find parts and submit requests.</p>
+                </div>
+              </button>
+            )}
           </div>
 
           <div className="border-t border-slate-100 pt-4 mt-2">
@@ -600,12 +716,14 @@ function DashboardView({ stats, loading, onNavigate, onRefresh }: DashboardViewP
           </div>
           <div className="mt-8 pt-4 border-t border-emerald-800 flex items-center justify-between">
             <span className="text-xs font-mono text-[#e2b007]">Ref: HQ-ET-QA-STD</span>
-            <button
-              onClick={() => onNavigate({ type: "materials" })}
-              className="text-[#e2b007] hover:text-[#e2b007]/80 text-xs font-semibold flex items-center gap-1 focus:outline-none"
-            >
-              Verify Spares <ChevronRight className="w-4 h-4" />
-            </button>
+            {permissions.canViewMaterials && (
+              <button
+                onClick={() => onNavigate({ type: "materials" })}
+                className="text-[#e2b007] hover:text-[#e2b007]/80 text-xs font-semibold flex items-center gap-1 focus:outline-none"
+              >
+                Verify Spares <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -629,6 +747,8 @@ interface MaterialsListViewProps {
   onNavigate: (view: ViewState) => void;
   onRefresh: () => void;
   addToast: (type: "success" | "error" | "warning" | "info", title: string, message?: string) => void;
+  canManageCatalog: boolean;
+  canReceiveStock: boolean;
 }
 
 function MaterialsListView({
@@ -642,7 +762,9 @@ function MaterialsListView({
   setSelectedCategoryFilter,
   onNavigate,
   onRefresh,
-  addToast
+  addToast,
+  canManageCatalog,
+  canReceiveStock
 }: MaterialsListViewProps) {
   // Compute totals based on current filtered/unfiltered elements
   const totalRawValue = materials.reduce((sum, item) => sum + item.stockValue, 0);
@@ -672,14 +794,16 @@ function MaterialsListView({
           </div>
         </div>
         
-        <button
-          id="btn-add-material-list"
-          onClick={() => onNavigate({ type: "material-new" })}
-          className="bg-[#006039] hover:bg-[#006039]/90 text-white font-semibold text-sm px-4 py-2 rounded-lg flex items-center justify-center gap-2 select-none shadow-sm transition-colors cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          Add Material
-        </button>
+        {canManageCatalog && (
+          <button
+            id="btn-add-material-list"
+            onClick={() => onNavigate({ type: "material-new" })}
+            className="bg-[#006039] hover:bg-[#006039]/90 text-white font-semibold text-sm px-4 py-2 rounded-lg flex items-center justify-center gap-2 select-none shadow-sm transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            Add Material
+          </button>
+        )}
       </div>
 
       {/* Hero Stock Value Component Card */}
@@ -887,22 +1011,26 @@ function MaterialsListView({
                           >
                             <Eye className="w-4 h-4" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => onNavigate({ type: "material-edit", id: item.id })}
-                            className="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-slate-100"
-                            title="Edit Spares Spec"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onNavigate({ type: "material-receive", id: item.id })}
-                            className="p-1 text-slate-400 hover:text-emerald-700 rounded hover:bg-slate-100"
-                            title="Receive Stock Batch"
-                          >
-                            <PlusCircle className="w-4 h-4" />
-                          </button>
+                          {canManageCatalog && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate({ type: "material-edit", id: item.id })}
+                              className="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-slate-100"
+                              title="Edit Spares Spec"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canReceiveStock && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate({ type: "material-receive", id: item.id })}
+                              className="p-1 text-slate-400 hover:text-emerald-700 rounded hover:bg-slate-100"
+                              title="Receive Stock Batch"
+                            >
+                              <PlusCircle className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -932,6 +1060,7 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
   const isEditMode = !!materialId;
 
   // Form local hooks
+  const [partNumber, setPartNumber] = useState<string>("");
   const [name, setName] = useState<string>("");
   const [categoryId, setCategoryId] = useState<string>("");
   const [unit, setUnit] = useState<string>("");
@@ -946,6 +1075,7 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
       const fetchPreValue = async () => {
         const mat = await api.getMaterial(materialId);
         if (mat) {
+          setPartNumber(mat.partNumber);
           setName(mat.name);
           setCategoryId(mat.categoryId.toString());
           setUnit(mat.unit);
@@ -963,6 +1093,7 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
 
     const normalizedPrice = parseFloat(unitPrice);
     const payload = {
+      partNumber: partNumber.trim(),
       name: name.trim(),
       categoryId: parseInt(categoryId),
       unit: unit.trim(),
@@ -1060,7 +1191,26 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
         /* Main Input form */
         <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
           
-          {/* Section 1: Name */}
+          {/* Section 1: Part number */}
+          <div className="space-y-1">
+            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide">
+              Part Number <span className="text-red-500">*</span>
+            </label>
+            <input
+              id="form-mat-part"
+              type="text"
+              placeholder="e.g. ET-AVN-WIRE-22-10"
+              value={partNumber}
+              onChange={(e) => setPartNumber(e.target.value)}
+              className={`w-full p-2.5 text-sm border rounded-lg focus:outline-none focus:ring-1 ${
+                fieldErrors["partnumber"]
+                  ? "border-rose-300 focus:ring-rose-500 bg-rose-50/20"
+                  : "border-slate-200 focus:ring-[#006039] focus:border-[#006039]"
+              }`}
+            />
+          </div>
+
+          {/* Section 2: Name */}
           <div className="space-y-1">
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide">
               Material Name <span className="text-red-500">*</span>
@@ -1202,9 +1352,21 @@ interface MaterialDetailViewProps {
   addToast: (type: "success" | "error" | "warning" | "info", title: string, message?: string) => void;
   executeApiCall: <T,>(call: () => Promise<T>, successMessage?: string, errorHandler?: (err: ApiError) => void) => Promise<T | null>;
   setConfirmDialog: (dialog: { isOpen: boolean; title: string; description: string; onConfirm: () => void; destructive?: boolean } | null) => void;
+  canManageCatalog: boolean;
+  canReceiveStock: boolean;
+  canDeleteMaterial: boolean;
 }
 
-function MaterialDetailView({ materialId, onNavigate, addToast, executeApiCall, setConfirmDialog }: MaterialDetailViewProps) {
+function MaterialDetailView({
+  materialId,
+  onNavigate,
+  addToast,
+  executeApiCall,
+  setConfirmDialog,
+  canManageCatalog,
+  canReceiveStock,
+  canDeleteMaterial
+}: MaterialDetailViewProps) {
   const [loading, setLoading] = useState<boolean>(true);
   const [detail, setDetail] = useState<MaterialDetail | null>(null);
 
@@ -1304,20 +1466,24 @@ function MaterialDetailView({ materialId, onNavigate, addToast, executeApiCall, 
           </div>
 
           <div className="flex flex-wrap gap-2 text-xs">
-            <button
-              id="btn-edit-detail"
-              onClick={() => onNavigate({ type: "material-edit", id: detail.id })}
-              className="px-3.5 py-2 border border-slate-200 bg-white hover:bg-slate-50 font-bold rounded-lg text-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Edit2 className="w-3.5 h-3.5" /> Edit Specs
-            </button>
-            <button
-              id="btn-delete-detail"
-              onClick={handleDelete}
-              className="px-3.5 py-2 border border-red-200 bg-rose-50 text-[#d62d20] hover:bg-rose-100 font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5" /> Delete Catalog Item
-            </button>
+            {canManageCatalog && (
+              <button
+                id="btn-edit-detail"
+                onClick={() => onNavigate({ type: "material-edit", id: detail.id })}
+                className="px-3.5 py-2 border border-slate-200 bg-white hover:bg-slate-50 font-bold rounded-lg text-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Edit2 className="w-3.5 h-3.5" /> Edit Specs
+              </button>
+            )}
+            {canDeleteMaterial && (
+              <button
+                id="btn-delete-detail"
+                onClick={handleDelete}
+                className="px-3.5 py-2 border border-red-200 bg-rose-50 text-[#d62d20] hover:bg-rose-100 font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete Catalog Item
+              </button>
+            )}
           </div>
         </div>
 
@@ -1370,14 +1536,16 @@ function MaterialDetailView({ materialId, onNavigate, addToast, executeApiCall, 
               </p>
             </div>
             
-            <button
-              id="btn-detail-receive-stock"
-              onClick={() => onNavigate({ type: "material-receive", id: detail.id })}
-              className="bg-[#006039] hover:bg-[#006039]/90 text-white font-semibold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 shadow-sm select-none cursor-pointer"
-            >
-              <PlusCircle className="w-4.5 h-4.5" />
-              Manage & Receive Stocks
-            </button>
+            {canReceiveStock && (
+              <button
+                id="btn-detail-receive-stock"
+                onClick={() => onNavigate({ type: "material-receive", id: detail.id })}
+                className="bg-[#006039] hover:bg-[#006039]/90 text-white font-semibold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 shadow-sm select-none cursor-pointer"
+              >
+                <PlusCircle className="w-4.5 h-4.5" />
+                Manage & Receive Stocks
+              </button>
+            )}
           </div>
 
         </div>
