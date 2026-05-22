@@ -26,8 +26,7 @@ export interface RolePermissions {
   canReceiveStock: boolean;
   canDeleteMaterial: boolean;
   canSubmitRequest: boolean;
-  canApproveRequest: boolean;
-  canMarkReady: boolean;
+  canReleaseForIssue: boolean;
   canConfirmPickup: boolean;
   canRecordReturn: boolean;
 }
@@ -131,8 +130,7 @@ export function getRolePermissions(role: string): RolePermissions {
     canReceiveStock: isAdmin || isManager,
     canDeleteMaterial: isAdmin,
     canSubmitRequest: isAdmin || isManager || isTech,
-    canApproveRequest: isAdmin || isManager,
-    canMarkReady: isAdmin || isManager,
+    canReleaseForIssue: isAdmin || isManager,
     canConfirmPickup: isAdmin || isManager || isTech,
     canRecordReturn: isAdmin || isManager || isTech,
   };

@@ -131,13 +131,18 @@ export function MaterialRequestsView({
 
   const submitRequest = async () => {
     if (!requestMaterialId || !session.shopId) return;
+    const workOrder = wo.trim();
+    if (!workOrder) {
+      addToast("warning", "Work order required", "Enter an aircraft registration or work order number before submitting.");
+      return;
+    }
     const ok = await executeApiCall(
       () =>
         api.submitMaterialRequest({
           materialId: requestMaterialId,
           shopId: session.shopId!,
           quantity: parseFloat(qty),
-          aircraftOrWorkOrder: wo || undefined,
+          aircraftOrWorkOrder: workOrder,
         }),
       "Request submitted"
     );
@@ -163,7 +168,13 @@ export function MaterialRequestsView({
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
           <p className="text-sm font-semibold">New request for material #{requestMaterialId}</p>
           <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="border rounded px-2 py-1 text-sm w-24" />
-          <input placeholder="Aircraft / WO" value={wo} onChange={(e) => setWo(e.target.value)} className="border rounded px-2 py-1 text-sm ml-2" />
+          <input
+            placeholder="Work order * (e.g. ET-AUE / WO-4401)"
+            value={wo}
+            onChange={(e) => setWo(e.target.value)}
+            required
+            className="border rounded px-2 py-1 text-sm ml-2 min-w-[200px]"
+          />
           <button onClick={submitRequest} className="ml-2 px-3 py-1 bg-[#006039] text-white text-xs rounded-lg font-semibold">
             Submit
           </button>
@@ -188,16 +199,21 @@ export function MaterialRequestsView({
                 <span className="font-bold text-slate-800">Requested by:</span>{" "}
                 <span className="text-slate-700">{r.requestedByName || "Unknown"}</span>
               </p>
+              {r.aircraftOrWorkOrder && (
+                <p className="text-xs mt-0.5 text-slate-500">
+                  <span className="font-semibold text-slate-600">Work order:</span> {r.aircraftOrWorkOrder}
+                </p>
+              )}
             </div>
             <div className="flex gap-2 shrink-0">
-              {isManager && r.status === "Submitted" && (
-                <button onClick={() => executeApiCall(() => api.approveRequest(r.requestId), "Approved").then(load)} className="text-xs px-2 py-1 border rounded-lg">
-                  Approve
-                </button>
-              )}
-              {isManager && r.status === "Approved" && (
-                <button onClick={() => executeApiCall(() => api.markRequestReady(r.requestId), "Ready for pickup").then(load)} className="text-xs px-2 py-1 bg-amber-100 rounded-lg">
-                  Mark ready
+              {isManager && (r.status === "Submitted" || r.status === "Approved") && (
+                <button
+                  onClick={() =>
+                    executeApiCall(() => api.releaseRequest(r.requestId), "Released for issue — technician notified").then(load)
+                  }
+                  className="text-xs px-2 py-1 bg-amber-100 text-amber-900 font-semibold rounded-lg hover:bg-amber-200"
+                >
+                  Release for issue
                 </button>
               )}
               {(isTech || isManager) && r.status === "ReadyForPickup" && (

@@ -288,16 +288,13 @@ export const api = {
     materialId: number;
     shopId: number;
     quantity: number;
-    aircraftOrWorkOrder?: string;
+    aircraftOrWorkOrder: string;
     notes?: string;
   }) =>
     request<any>("/api/materialrequests", { method: "POST", body: JSON.stringify(data) }).then(adaptRequest),
 
-  approveRequest: (id: number) =>
-    request<any>(`/api/materialrequests/${id}/approve`, { method: "PATCH" }).then(adaptRequest),
-
-  markRequestReady: (id: number) =>
-    request<any>(`/api/materialrequests/${id}/ready`, { method: "PATCH" }).then(adaptRequest),
+  releaseRequest: (id: number) =>
+    request<any>(`/api/materialrequests/${id}/release`, { method: "PATCH" }).then(adaptRequest),
 
   issueRequest: (id: number, collectedByUserId: number, flightNumber?: string) =>
     request<any>(`/api/materialrequests/${id}/issue`, {
