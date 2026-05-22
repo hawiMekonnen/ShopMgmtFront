@@ -7,6 +7,7 @@ import {
   ClipboardList,
   Bell,
   Package,
+  Warehouse,
   Info,
 } from "lucide-react";
 import { AuthSession, ViewState } from "../types";
@@ -19,6 +20,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   materials: Boxes,
   alerts: Bell,
   procurement: Package,
+  "stock-by-shop": Warehouse,
   categories: Layers,
 };
 

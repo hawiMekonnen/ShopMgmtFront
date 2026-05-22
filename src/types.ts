@@ -1,5 +1,11 @@
 import type { RequestStatusKey } from "./requestStatus";
 
+export interface Shop {
+  id: number;
+  name: string;
+  location?: string;
+}
+
 export interface Category {
   id: number;
   name: string;
@@ -23,6 +29,9 @@ export interface Material {
   reserved?: number;
   available: number;
   stockValue: number;
+  reorderPlaced?: boolean;
+  reorderNote?: string;
+  defaultShopId?: number;
 }
 
 export interface MaterialDetail {
@@ -102,6 +111,7 @@ export type ViewState =
   | { type: "material-requests" }
   | { type: "alerts" }
   | { type: "procurement" }
+  | { type: "stock-by-shop" }
   | { type: "material-new" }
   | { type: "material-edit"; id: number }
   | { type: "material-detail"; id: number }

@@ -23,6 +23,7 @@ export interface RolePermissions {
   canViewRequests: boolean;
   canViewAlerts: boolean;
   canViewProcurement: boolean;
+  canViewStockByShop: boolean;
   canReceiveStock: boolean;
   canDeleteMaterial: boolean;
   canSubmitRequest: boolean;
@@ -55,8 +56,20 @@ export const NAV_ITEMS: NavItem[] = [
   {
     id: "materials",
     view: "materials",
+    label: "My shop stock",
+    roles: ["ShopManager"],
+    activeWhen: (v) =>
+      v.type === "materials" ||
+      v.type === "material-new" ||
+      v.type === "material-edit" ||
+      v.type === "material-detail" ||
+      v.type === "material-receive",
+  },
+  {
+    id: "materials-admin",
+    view: "materials",
     label: "Materials & stock",
-    roles: ["ShopManager", "Admin"],
+    roles: ["Admin"],
     activeWhen: (v) =>
       v.type === "materials" ||
       v.type === "material-new" ||
@@ -74,6 +87,12 @@ export const NAV_ITEMS: NavItem[] = [
     id: "procurement",
     view: "procurement",
     label: "Procurement inbox",
+    roles: ["Procurement", "Admin"],
+  },
+  {
+    id: "stock-by-shop",
+    view: "stock-by-shop",
+    label: "Stock by shop",
     roles: ["Procurement", "Admin"],
   },
   {
@@ -127,6 +146,7 @@ export function getRolePermissions(role: string): RolePermissions {
     canViewRequests: isAdmin || isManager || isTech,
     canViewAlerts: isAdmin || isManager || isTech || isProc,
     canViewProcurement: isAdmin || isProc,
+    canViewStockByShop: isAdmin || isProc,
     canReceiveStock: isAdmin || isManager,
     canDeleteMaterial: isAdmin,
     canSubmitRequest: isAdmin || isManager || isTech,
@@ -162,6 +182,8 @@ export function canAccessView(role: string, view: ViewState): boolean {
       return perms.canViewAlerts;
     case "procurement":
       return perms.canViewProcurement;
+    case "stock-by-shop":
+      return perms.canViewStockByShop;
     default:
       return false;
   }
@@ -172,9 +194,9 @@ export function getRoleSubtitle(role: string): string {
     case "Technician":
       return "Find parts, submit requests, collect stock when ready.";
     case "ShopManager":
-      return "Approve requests, receive stock, release materials to shops.";
+      return "Your shop stock, request queue, and issuing materials.";
     case "Procurement":
-      return "Review low stock, quarantine, and reorder actions.";
+      return "Stock by location, inbox actions, and on-order tracking.";
     case "Finance":
       return "Overview and reporting (read-only operations).";
     case "Admin":

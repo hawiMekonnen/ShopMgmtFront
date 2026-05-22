@@ -293,21 +293,51 @@ export function ProcurementView({
   executeApiCall: <T,>(call: () => Promise<T>, successMessage?: string) => Promise<T | null>;
 }) {
   const [actions, setActions] = useState<any[]>([]);
+  const [shops, setShops] = useState<{ id: number; name: string; location?: string }[]>([]);
+  const [shopId, setShopId] = useState<number | "">("");
 
   const load = async () => {
-    const a = await executeApiCall(() => api.getProcurementActions());
+    const sid = shopId === "" ? undefined : shopId;
+    const a = await executeApiCall(() => api.getProcurementActions(sid));
     if (a) setActions(a);
   };
 
   useEffect(() => {
-    load();
-  }, []);
+    (async () => {
+      const list = await executeApiCall(() => api.getShops());
+      if (list?.length) {
+        setShops(list);
+        if (shopId === "") setShopId(list[0].id);
+      }
+    })();
+  }, [executeApiCall]);
+
+  useEffect(() => {
+    if (shopId !== "") load();
+  }, [shopId]);
 
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
         <Package className="w-6 h-6" /> Procurement inbox
       </h2>
+      <p className="text-sm text-slate-500">Actions for the selected shop location. Use Stock by shop for full on-hand / on-order view.</p>
+      {shops.length > 0 && (
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-semibold text-slate-600">Shop</label>
+          <select
+            value={shopId}
+            onChange={(e) => setShopId(e.target.value ? Number(e.target.value) : "")}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          >
+            {shops.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="bg-white rounded-xl border divide-y">
         {actions.map((a, i) => (
           <div key={i} className="p-4 text-sm flex justify-between gap-4">

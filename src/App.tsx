@@ -31,17 +31,19 @@ import {
   Package
 } from "lucide-react";
 import { api, ApiError, setOnUnauthorized } from "./client";
-import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState, AuthSession } from "./types";
+import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState, AuthSession, Shop } from "./types";
 import ToastContainer, { ToastMessage } from "./components/Toast";
 import LoginView from "./components/LoginView";
 import AppSidebar from "./components/AppSidebar";
 import AccessDenied from "./components/AccessDenied";
 import { MaterialSearchView, MaterialRequestsView, AlertsView, ProcurementView } from "./components/AmosWorkflowViews";
+import StockByShopView from "./components/StockByShopView";
 import {
   canAccessView,
   getDefaultView,
   getHomeView,
   getRolePermissions,
+  normalizeRole,
   type RolePermissions,
 } from "./roleConfig";
 
@@ -69,6 +71,9 @@ export default function App() {
   // Filter criteria for Materials List
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>("all");
+  const [shops, setShops] = useState<Shop[]>([]);
+  /** Admin: null = all locations; Shop manager: fixed via session.shopId */
+  const [inventoryShopId, setInventoryShopId] = useState<number | null>(null);
 
   // Interactive UI feedback
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -142,13 +147,27 @@ export default function App() {
     if (cats) setCategories(cats);
   }, [executeApiCall]);
 
+  const resolveInventoryShopId = useCallback((): number | undefined => {
+    if (!session) return undefined;
+    const role = normalizeRole(session.role);
+    if (role === "ShopManager" && session.shopId) return session.shopId;
+    if (role === "Admin" && inventoryShopId != null) return inventoryShopId;
+    return undefined;
+  }, [session, inventoryShopId]);
+
+  const loadShops = useCallback(async () => {
+    const list = await executeApiCall(() => api.getShops());
+    if (list) setShops(list);
+  }, [executeApiCall]);
+
   const loadAllMaterials = useCallback(async () => {
-    const mats = await executeApiCall(() => api.getMaterials());
+    const shopId = resolveInventoryShopId();
+    const mats = await executeApiCall(() => api.getMaterials(shopId));
     if (mats) {
       setMaterials(mats);
       setLastUpdated(new Date().toLocaleTimeString());
     }
-  }, [executeApiCall]);
+  }, [executeApiCall, resolveInventoryShopId]);
 
   // Combine load ops (dashboard + catalog screens only)
   const refreshAllContext = useCallback(async () => {
@@ -183,6 +202,8 @@ export default function App() {
           await loadAllCategories();
           setLoading(false);
           break;
+        case "stock-by-shop":
+          break;
         default:
           break;
       }
@@ -205,6 +226,18 @@ export default function App() {
       loadDataForView(currentView.type);
     }
   }, [session, currentView.type, loadDataForView]);
+
+  useEffect(() => {
+    if (session && (normalizeRole(session.role) === "Admin" || permissions?.canViewMaterials)) {
+      loadShops();
+    }
+  }, [session, permissions?.canViewMaterials, loadShops]);
+
+  useEffect(() => {
+    if (session && normalizeRole(session.role) === "Admin" && inventoryShopId !== null) {
+      loadAllMaterials();
+    }
+  }, [inventoryShopId, session, loadAllMaterials]);
 
   // Redirect if user lands on a view their role cannot access
   useEffect(() => {
@@ -357,14 +390,28 @@ export default function App() {
               lastUpdated={lastUpdated}
               searchQuery={searchQuery}
               setSearchQuery={setSearchQuery}
-              selectedCategoryFilter={selectedCategoryFilter}
               setSelectedCategoryFilter={setSelectedCategoryFilter}
+              selectedCategoryFilter={selectedCategoryFilter}
               onNavigate={navigate}
               onRefresh={loadAllMaterials}
               addToast={addToast}
               canManageCatalog={permissions.canManageCatalog}
               canReceiveStock={permissions.canReceiveStock}
+              shopScopeLabel={
+                normalizeRole(session.role) === "ShopManager"
+                  ? shops.find((s) => s.id === session.shopId)?.name ?? "Your shop"
+                  : inventoryShopId != null
+                  ? shops.find((s) => s.id === inventoryShopId)?.name
+                  : "All locations"
+              }
+              shops={normalizeRole(session.role) === "Admin" ? shops : undefined}
+              inventoryShopId={inventoryShopId}
+              onInventoryShopChange={(id) => setInventoryShopId(id)}
             />
+          )}
+
+          {currentView.type === "stock-by-shop" && permissions?.canViewStockByShop && (
+            <StockByShopView session={session} readOnly={normalizeRole(session.role) === "Procurement"} executeApiCall={executeApiCall} />
           )}
 
           {currentView.type === "material-new" && permissions?.canManageCatalog && (
@@ -749,6 +796,10 @@ interface MaterialsListViewProps {
   addToast: (type: "success" | "error" | "warning" | "info", title: string, message?: string) => void;
   canManageCatalog: boolean;
   canReceiveStock: boolean;
+  shopScopeLabel?: string;
+  shops?: Shop[];
+  inventoryShopId?: number | null;
+  onInventoryShopChange?: (shopId: number | null) => void;
 }
 
 function MaterialsListView({
@@ -764,7 +815,11 @@ function MaterialsListView({
   onRefresh,
   addToast,
   canManageCatalog,
-  canReceiveStock
+  canReceiveStock,
+  shopScopeLabel,
+  shops,
+  inventoryShopId,
+  onInventoryShopChange,
 }: MaterialsListViewProps) {
   // Compute totals based on current filtered/unfiltered elements
   const totalRawValue = materials.reduce((sum, item) => sum + item.stockValue, 0);
@@ -786,12 +841,34 @@ function MaterialsListView({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Materials Inventory</h2>
-          <div className="flex items-center gap-1 mt-1 text-sm text-slate-500">
-            <span>Operational list of parts & maintenance materials.</span>
+          <div className="flex flex-wrap items-center gap-2 mt-1 text-sm text-slate-500">
+            {shopScopeLabel && (
+              <span className="text-xs font-bold text-[#006039] bg-[#006039]/10 px-2 py-0.5 rounded">
+                Location: {shopScopeLabel}
+              </span>
+            )}
+            <span>Quantities reflect stock at this location.</span>
             {lastUpdated && (
               <span className="text-xs text-slate-400 font-mono italic">(Updated: {lastUpdated})</span>
             )}
           </div>
+          {shops && shops.length > 0 && onInventoryShopChange && (
+            <select
+              className="mt-2 border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+              value={inventoryShopId ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onInventoryShopChange(v === "" ? null : Number(v));
+              }}
+            >
+              <option value="">All locations (airline-wide)</option>
+              {shops.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         
         {canManageCatalog && (

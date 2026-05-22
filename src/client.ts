@@ -7,6 +7,7 @@ import {
   AuthSession,
   MaterialRequest,
   Alert,
+  Shop,
 } from "./types";
 import { normalizeRequestStatus } from "./requestStatus";
 
@@ -101,6 +102,17 @@ function adaptMaterial(raw: any): Material {
     reserved: raw.reserved,
     available: raw.available ?? raw.onHand ?? 0,
     stockValue: raw.stockValue ?? 0,
+    reorderPlaced: raw.reorderPlaced ?? false,
+    reorderNote: raw.reorderNote,
+    defaultShopId: raw.defaultShopId,
+  };
+}
+
+function adaptShop(raw: any): Shop {
+  return {
+    id: raw.shopId ?? raw.id,
+    name: raw.name,
+    location: raw.location,
   };
 }
 
@@ -195,6 +207,8 @@ export const api = {
         : undefined,
     };
   },
+
+  getShops: () => request<any[]>("/api/shops").then((items) => items.map(adaptShop)),
 
   getCategories: () => request<any[]>("/api/categories").then((items) => items.map(adaptCategory)),
   getCategory: (id: number) => request<any>(`/api/categories/${id}`).then(adaptCategory),
@@ -325,7 +339,10 @@ export const api = {
     batchId?: number;
   }) => request<any>("/api/materialreturns", { method: "POST", body: JSON.stringify(data) }),
 
-  getProcurementActions: () => request<any[]>("/api/procurement/actions"),
+  getProcurementActions: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<any[]>(`/api/procurement/actions${q}`);
+  },
 
   markReorder: (materialId: number, reorderNote?: string) =>
     request<void>(`/api/procurement/materials/${materialId}/reorder`, {
