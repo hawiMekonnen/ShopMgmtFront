@@ -1,0 +1,173 @@
+import React, { useState, useEffect, useCallback } from "react";
+import { Users, RefreshCw, UserPlus, ClipboardList, Package } from "lucide-react";
+import { api } from "../client";
+import { AuthSession, MaterialRequest } from "../types";
+import { requestStatusLabel } from "../requestStatus";
+
+type ToastFn = (type: "success" | "error" | "warning" | "info", title: string, message?: string) => void;
+
+interface Technician {
+  userId: number;
+  name: string;
+  email: string;
+}
+
+interface UsageRow {
+  usageId: number;
+  materialName: string;
+  partNumber: string;
+  userName: string;
+  quantityUsed: number;
+  usedAt: string;
+}
+
+export default function TeamManagementView({
+  session,
+  addToast,
+  executeApiCall,
+}: {
+  session: AuthSession;
+  addToast: ToastFn;
+  executeApiCall: <T,>(call: () => Promise<T>, msg?: string) => Promise<T | null>;
+}) {
+  const [technicians, setTechnicians] = useState<Technician[]>([]);
+  const [requests, setRequests] = useState<MaterialRequest[]>([]);
+  const [usages, setUsages] = useState<UsageRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const activity = await executeApiCall(() => api.getShopActivity(session.shopId));
+    if (activity) {
+      setTechnicians(activity.technicians);
+      setRequests(activity.requests);
+      setUsages(activity.recentUsages);
+    }
+    setLoading(false);
+  }, [session.shopId, executeApiCall]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const createTechnician = async () => {
+    if (!name.trim() || !email.trim() || password.length < 6) {
+      addToast("warning", "Invalid form", "Name, email, and password (6+ chars) are required.");
+      return;
+    }
+    setCreating(true);
+    const created = await executeApiCall(
+      () => api.createTechnician({ name: name.trim(), email: email.trim(), password }),
+      "Technician account created"
+    );
+    setCreating(false);
+    if (created) {
+      setName("");
+      setEmail("");
+      setPassword("");
+      load();
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <Users className="w-6 h-6" /> Shop team & activity
+        </h2>
+        <button type="button" onClick={load} className="p-2 border rounded-lg hover:bg-slate-50">
+          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      <p className="text-sm text-slate-500">
+        Create login accounts for technicians in your shop. They submit material requests; you approve or reject before release.
+      </p>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
+        <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
+          <UserPlus className="w-4 h-4 text-[#006039]" /> New technician account
+        </h3>
+        <div className="flex flex-wrap gap-2">
+          <input
+            placeholder="Full name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]"
+          />
+          <input
+            placeholder="Email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[180px]"
+          />
+          <input
+            placeholder="Temporary password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="border rounded-lg px-3 py-2 text-sm w-40"
+          />
+          <button
+            type="button"
+            disabled={creating}
+            onClick={createTechnician}
+            className="px-4 py-2 bg-[#006039] text-white text-sm font-semibold rounded-lg disabled:opacity-50"
+          >
+            Create account
+          </button>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-white rounded-xl border divide-y">
+          <h3 className="p-4 font-semibold text-sm text-slate-700">Technicians ({technicians.length})</h3>
+          {technicians.map((t) => (
+            <div key={t.userId} className="px-4 py-3 text-sm">
+              <p className="font-medium">{t.name}</p>
+              <p className="text-xs text-slate-500">{t.email}</p>
+            </div>
+          ))}
+          {technicians.length === 0 && <p className="p-4 text-slate-400 text-sm">No technicians yet.</p>}
+        </div>
+
+        <div className="bg-white rounded-xl border divide-y max-h-80 overflow-y-auto">
+          <h3 className="p-4 font-semibold text-sm text-slate-700 flex items-center gap-2">
+            <Package className="w-4 h-4" /> Recent issues (stock collected)
+          </h3>
+          {usages.map((u) => (
+            <div key={u.usageId} className="px-4 py-2 text-xs border-t">
+              <span className="font-semibold">{u.userName}</span> — {u.quantityUsed}× {u.materialName}
+              <span className="text-slate-400 block">{new Date(u.usedAt).toLocaleString()}</span>
+            </div>
+          ))}
+          {usages.length === 0 && <p className="p-4 text-slate-400 text-sm">No usage recorded yet.</p>}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border divide-y">
+        <h3 className="p-4 font-semibold text-sm text-slate-700 flex items-center gap-2">
+          <ClipboardList className="w-4 h-4" /> All shop requests
+        </h3>
+        {requests.map((r) => (
+          <div key={r.requestId} className="px-4 py-3 text-sm flex justify-between gap-2">
+            <div>
+              <p className="font-medium">
+                #{r.requestId} {r.partNumber} — {r.materialName}
+              </p>
+              <p className="text-xs text-slate-500">
+                {r.requestedByName} · Qty {r.quantity} · {requestStatusLabel(r.status)}
+              </p>
+            </div>
+          </div>
+        ))}
+        {requests.length === 0 && <p className="p-6 text-center text-slate-400 text-sm">No requests.</p>}
+      </div>
+    </div>
+  );
+}

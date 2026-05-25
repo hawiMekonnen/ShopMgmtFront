@@ -31,12 +31,14 @@ import {
   Package
 } from "lucide-react";
 import { api, ApiError, setOnUnauthorized } from "./client";
-import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState, AuthSession, Shop } from "./types";
+import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState, AuthSession, Shop, Alert } from "./types";
+import { startRealtimeHub, stopRealtimeHub, filterAlertsForRole, alertTypeLabel } from "./realtime";
 import ToastContainer, { ToastMessage } from "./components/Toast";
 import LoginView from "./components/LoginView";
 import AppSidebar from "./components/AppSidebar";
 import AccessDenied from "./components/AccessDenied";
 import { MaterialSearchView, MaterialRequestsView, AlertsView, ProcurementView } from "./components/AmosWorkflowViews";
+import TeamManagementView from "./components/TeamManagementView";
 import StockByShopView from "./components/StockByShopView";
 import {
   canAccessView,
@@ -93,6 +95,8 @@ export default function App() {
 
   // Helper timer reference for 12,000ms live auto-refresh
   const autoRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [activeAlertCount, setActiveAlertCount] = useState(0);
+  const [alertsRefreshToken, setAlertsRefreshToken] = useState(0);
 
   // Custom Toast helper
   const addToast = useCallback((type: "success" | "error" | "warning" | "info", title: string, message?: string) => {
@@ -212,6 +216,56 @@ export default function App() {
   );
 
   const permissions = session ? getRolePermissions(session.role) : null;
+
+  const refreshAlertCount = useCallback(async () => {
+    if (!session || !permissions?.canViewAlerts) return;
+    try {
+      const alerts = await api.getAlerts();
+      setActiveAlertCount(filterAlertsForRole(alerts, session.role).length);
+    } catch {
+      // ignore — main API helper shows errors elsewhere
+    }
+  }, [session, permissions?.canViewAlerts]);
+
+  useEffect(() => {
+    if (!session?.token) return;
+
+    refreshAlertCount();
+
+    const handleAlert = (alert: Alert) => {
+      if (session.role === "Technician" && alert.type === "NewMaterialAdded") return;
+      if (!filterAlertsForRole([alert], session.role).length) return;
+      setActiveAlertCount((c) => c + 1);
+      setAlertsRefreshToken((t) => t + 1);
+      addToast(
+        "info",
+        alertTypeLabel(alert.type),
+        alert.note ?? `${alert.materialName}${alert.requestId ? ` (request #${alert.requestId})` : ""}`
+      );
+    };
+
+    const handleNewMaterial = (payload: { materialId: number; name: string; partNumber?: string }) => {
+      if (session.role !== "Technician") return;
+      setActiveAlertCount((c) => c + 1);
+      setAlertsRefreshToken((t) => t + 1);
+      addToast(
+        "success",
+        "New material available",
+        `${payload.name}${payload.partNumber ? ` (${payload.partNumber})` : ""} was added to the catalog.`
+      );
+    };
+
+    startRealtimeHub(session.token, {
+      onAlertCreated: handleAlert,
+      onNewMaterial: handleNewMaterial,
+    }).catch(() => {
+      // Hub optional when API offline
+    });
+
+    return () => {
+      stopRealtimeHub();
+    };
+  }, [session?.token, session?.role, refreshAlertCount, addToast]);
 
   useEffect(() => {
     setOnUnauthorized(() => {
@@ -364,6 +418,7 @@ export default function App() {
           currentView={currentView}
           onNavigate={navigate}
           lastUpdated={lastUpdated}
+          alertBadgeCount={permissions?.canViewAlerts ? activeAlertCount : 0}
         />
 
         {/* 4. Main Page Body Outlet */}
@@ -379,6 +434,7 @@ export default function App() {
               onNavigate={navigate}
               onRefresh={refreshAllContext}
               permissions={permissions}
+              role={session.role}
             />
           )}
 
@@ -476,8 +532,18 @@ export default function App() {
             />
           )}
 
+          {currentView.type === "team" && permissions?.canManageTeam && (
+            <TeamManagementView session={session} addToast={addToast} executeApiCall={executeApiCall} />
+          )}
+
           {currentView.type === "alerts" && (
-            <AlertsView executeApiCall={executeApiCall} role={session.role} />
+            <AlertsView
+              executeApiCall={executeApiCall}
+              role={session.role}
+              userId={session.userId}
+              refreshToken={alertsRefreshToken}
+              onCountChange={setActiveAlertCount}
+            />
           )}
 
           {currentView.type === "procurement" && (
@@ -562,9 +628,25 @@ interface DashboardViewProps {
   onNavigate: (view: ViewState) => void;
   onRefresh: () => void;
   permissions: RolePermissions;
+  role: string;
 }
 
-function DashboardView({ stats, loading, onNavigate, onRefresh, permissions }: DashboardViewProps) {
+function DashboardView({ stats, loading, onNavigate, onRefresh, permissions, role }: DashboardViewProps) {
+  const [logs, setLogs] = useState<any[]>([]);
+  const [logsLoading, setLogsLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (role === "Admin") {
+      setLogsLoading(true);
+      api.getAuditLogs(1, 20)
+        .then((res) => {
+          if (res && res.items) setLogs(res.items);
+          setLogsLoading(false);
+        })
+        .catch(() => setLogsLoading(false));
+    }
+  }, [role, stats]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -655,7 +737,7 @@ function DashboardView({ stats, loading, onNavigate, onRefresh, permissions }: D
             ) : (
               <div className="h-9 w-16 bg-slate-200 animate-pulse rounded" />
             )}
-            <p className="text-xs text-slate-400 mt-1">Lines with quantity under 10</p>
+            <p className="text-xs text-slate-400 mt-1">Lines below minimum stock</p>
           </div>
         </div>
 
@@ -775,6 +857,73 @@ function DashboardView({ stats, loading, onNavigate, onRefresh, permissions }: D
         </div>
 
       </div>
+
+      {/* System-wide Audit Ledger (Admin Only) */}
+      {role === "Admin" && (
+        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <History className="w-5 h-5 text-[#006039]" />
+              System-wide Operational & Audit Ledger
+            </h3>
+            <span className="text-xs text-slate-400 font-mono">Real-time stock flow & user transaction tracking</span>
+          </div>
+
+          {logsLoading && logs.length === 0 ? (
+            <div className="p-12 text-center">
+              <Loader2 className="w-8 h-8 animate-spin text-[#006039] mx-auto mb-4" />
+              <p className="text-xs text-slate-500 font-mono">Retrieving secure transaction files...</p>
+            </div>
+          ) : logs.length === 0 ? (
+            <p className="p-6 text-center text-slate-400 text-xs font-mono">No transaction records logged.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-slate-100">
+              <table className="min-w-full divide-y divide-slate-100">
+                <thead className="bg-slate-50 font-mono">
+                  <tr>
+                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">Timestamp</th>
+                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">Action</th>
+                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Resource</th>
+                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Performed By</th>
+                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {logs.map((log) => (
+                    <tr key={log.logId} className="hover:bg-slate-50 text-xs">
+                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap font-mono">
+                        {new Date(log.timestamp).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 font-mono">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          log.action === "Receive" || log.action === "Create"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : log.action === "IssueRequest"
+                            ? "bg-teal-100 text-teal-800"
+                            : log.action === "Delete" || log.action === "CancelRequest"
+                            ? "bg-rose-100 text-rose-800"
+                            : "bg-slate-100 text-slate-700"
+                        }`}>
+                          {log.action}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-600">
+                        {log.entity} (#{log.entityId})
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-slate-800 font-sans">
+                        {log.performedByName}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 leading-relaxed font-sans">
+                        {log.details}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1016,8 +1165,10 @@ function MaterialsListView({
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredMaterials.map((item) => {
-                  const outOfStock = item.onHand <= 0;
-                  const lowStock = item.onHand > 0 && item.onHand < 10;
+                  const available = item.available ?? item.onHand ?? 0;
+                  const min = item.minStock ?? 10;
+                  const outOfStock = available <= 0;
+                  const lowStock = available > 0 && min > 0 && available < min;
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/50 transition-colors select-none">
@@ -1059,12 +1210,13 @@ function MaterialsListView({
                               ? "bg-amber-100 text-amber-800" 
                               : "text-slate-900"
                           }`}>
-                            {item.onHand}
+                            {available}
                           </span>
+                          <span className="text-[9px] text-slate-400">avail</span>
                           {outOfStock && (
                             <span className="text-[9px] text-[#d62d20] font-sans font-bold uppercase mt-0.5">Out of Stock</span>
                           )}
-                          {lowStock && (
+                          {lowStock && !outOfStock && (
                             <span className="text-[9px] text-amber-700 font-sans font-semibold uppercase mt-0.5">Low Stock</span>
                           )}
                         </div>
@@ -1142,6 +1294,8 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
   const [categoryId, setCategoryId] = useState<string>("");
   const [unit, setUnit] = useState<string>("");
   const [unitPrice, setUnitPrice] = useState<string>("");
+  const [minStock, setMinStock] = useState<string>("10");
+  const [initialQuantity, setInitialQuantity] = useState<string>("0");
 
   const [saving, setSaving] = useState<boolean>(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
@@ -1168,14 +1322,18 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
     setSaving(true);
     setFieldErrors({});
 
+    const parsedCategory = parseInt(categoryId, 10);
     const normalizedPrice = parseFloat(unitPrice);
     const payload = {
       partNumber: partNumber.trim(),
       name: name.trim(),
-      categoryId: parseInt(categoryId),
+      categoryId: isNaN(parsedCategory) ? 0 : parsedCategory,
       unit: unit.trim(),
       unitPrice: isNaN(normalizedPrice) ? 0 : normalizedPrice,
+      minStock: parseFloat(minStock) || 0,
+      initialQuantity: isEditMode ? 0 : parseFloat(initialQuantity) || 0,
     };
+
 
     // Client side guard
     if (categories.length === 0) {
@@ -1395,6 +1553,35 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
             <p className="text-[10px] text-slate-400">Used as the multiplier against physical batch quantities to calculate inventory worth.</p>
           </div>
 
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs font-semibold text-slate-600">Minimum stock level</label>
+              <input
+                id="form-mat-minstock"
+                type="number"
+                min="0"
+                value={minStock}
+                onChange={(e) => setMinStock(e.target.value)}
+                className="w-full mt-1 p-2.5 text-sm border border-slate-200 rounded-lg"
+              />
+            </div>
+            {!isEditMode && (
+              <div>
+                <label className="text-xs font-semibold text-slate-600">Opening quantity *</label>
+                <input
+                  id="form-mat-initial-qty"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={initialQuantity}
+                  onChange={(e) => setInitialQuantity(e.target.value)}
+                  className="w-full mt-1 p-2.5 text-sm border border-slate-200 rounded-lg"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">Serviceable stock added when the part is created. Use 0 if receiving later.</p>
+              </div>
+            )}
+          </div>
+
           {/* Action Row */}
           <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
             <button
@@ -1576,11 +1763,11 @@ function MaterialDetailView({
             </div>
             
             {/* Warning tag */}
-            {detail.onHand <= 0 ? (
+            {(detail.available ?? detail.onHand) <= 0 ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-rose-100 text-[#d62d20]">
                 Out of Stock
               </span>
-            ) : detail.onHand < 10 ? (
+            ) : (detail.minStock ?? 0) > 0 && (detail.available ?? detail.onHand) < (detail.minStock ?? 0) ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-100 text-amber-800">
                 Low stock limit alarm
               </span>

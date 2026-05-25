@@ -32,6 +32,8 @@ export interface Material {
   reorderPlaced?: boolean;
   reorderNote?: string;
   defaultShopId?: number;
+  hiddenFromTechnicians?: boolean;
+  isOrderable?: boolean;
 }
 
 export interface MaterialDetail {
@@ -76,6 +78,7 @@ export interface AuthSession {
   token: string;
   email: string;
   role: string;
+  userId?: number;
   shopId?: number;
 }
 
@@ -101,7 +104,11 @@ export interface Alert {
   materialName: string;
   type: string;
   currentQuantity: number;
+  threshold?: number;
+  triggeredAt?: string;
   requestId?: number;
+  note?: string;
+  createdAt?: string;
 }
 
 export type ViewState =
@@ -109,6 +116,7 @@ export type ViewState =
   | { type: "materials" }
   | { type: "material-search" }
   | { type: "material-requests" }
+  | { type: "team" }
   | { type: "alerts" }
   | { type: "procurement" }
   | { type: "stock-by-shop" }

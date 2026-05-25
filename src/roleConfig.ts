@@ -27,6 +27,8 @@ export interface RolePermissions {
   canReceiveStock: boolean;
   canDeleteMaterial: boolean;
   canSubmitRequest: boolean;
+  canRejectRequest: boolean;
+  canManageTeam: boolean;
   canReleaseForIssue: boolean;
   canConfirmPickup: boolean;
   canRecordReturn: boolean;
@@ -39,7 +41,7 @@ export const NAV_ITEMS: NavItem[] = [
     id: "dashboard",
     view: "dashboard",
     label: "Dashboard",
-    roles: ["Admin", "ShopManager", "Finance"],
+    roles: ["Admin", "ShopManager", "Finance", "Procurement", "Technician"],
   },
   {
     id: "material-search",
@@ -51,7 +53,19 @@ export const NAV_ITEMS: NavItem[] = [
     id: "material-requests",
     view: "material-requests",
     label: "Request queue",
-    roles: ["Technician", "ShopManager", "Admin"],
+    roles: ["Technician", "Admin"],
+  },
+  {
+    id: "material-requests-mgr",
+    view: "material-requests",
+    label: "Approve requests",
+    roles: ["ShopManager"],
+  },
+  {
+    id: "team",
+    view: "team",
+    label: "Team & activity",
+    roles: ["ShopManager"],
   },
   {
     id: "materials",
@@ -69,7 +83,7 @@ export const NAV_ITEMS: NavItem[] = [
     id: "materials-admin",
     view: "materials",
     label: "Materials & stock",
-    roles: ["Admin"],
+    roles: ["Admin", "Procurement"],
     activeWhen: (v) =>
       v.type === "materials" ||
       v.type === "material-new" ||
@@ -137,9 +151,9 @@ export function getRolePermissions(role: string): RolePermissions {
   const isFinance = r === "Finance";
 
   return {
-    canViewDashboard: isAdmin || isManager || isFinance,
-    canViewMaterials: isAdmin || isManager,
-    canManageCatalog: isAdmin || isManager,
+    canViewDashboard: isAdmin || isManager || isFinance || isProc || isTech,
+    canViewMaterials: isAdmin || isManager || isProc,
+    canManageCatalog: isAdmin || isProc,
     canViewCategories: isAdmin,
     canManageCategories: isAdmin,
     canSearchAndRequest: isAdmin || isManager || isTech,
@@ -149,7 +163,9 @@ export function getRolePermissions(role: string): RolePermissions {
     canViewStockByShop: isAdmin || isProc,
     canReceiveStock: isAdmin || isManager,
     canDeleteMaterial: isAdmin,
-    canSubmitRequest: isAdmin || isManager || isTech,
+    canSubmitRequest: isTech,
+    canRejectRequest: isAdmin || isManager,
+    canManageTeam: isManager,
     canReleaseForIssue: isAdmin || isManager,
     canConfirmPickup: isAdmin || isManager || isTech,
     canRecordReturn: isAdmin || isManager || isTech,
@@ -178,6 +194,8 @@ export function canAccessView(role: string, view: ViewState): boolean {
       return perms.canSearchAndRequest;
     case "material-requests":
       return perms.canViewRequests;
+    case "team":
+      return perms.canManageTeam;
     case "alerts":
       return perms.canViewAlerts;
     case "procurement":
@@ -194,7 +212,7 @@ export function getRoleSubtitle(role: string): string {
     case "Technician":
       return "Find parts, submit requests, collect stock when ready.";
     case "ShopManager":
-      return "Your shop stock, request queue, and issuing materials.";
+      return "Approve technician requests, manage team accounts, and issue stock.";
     case "Procurement":
       return "Stock by location, inbox actions, and on-order tracking.";
     case "Finance":

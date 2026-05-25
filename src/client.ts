@@ -105,6 +105,8 @@ function adaptMaterial(raw: any): Material {
     reorderPlaced: raw.reorderPlaced ?? false,
     reorderNote: raw.reorderNote,
     defaultShopId: raw.defaultShopId,
+    hiddenFromTechnicians: raw.hiddenFromTechnicians ?? false,
+    isOrderable: raw.isOrderable ?? (raw.available ?? raw.onHand ?? 0) > 0,
   };
 }
 
@@ -179,11 +181,13 @@ export const api = {
       token: res.token,
       email: res.email,
       role: res.role,
+      userId: res.userId,
       shopId: res.shopId,
     };
     sessionStorage.setItem("authToken", session.token);
     sessionStorage.setItem("authRole", session.role);
     sessionStorage.setItem("authEmail", session.email);
+    if (session.userId) sessionStorage.setItem("authUserId", String(session.userId));
     if (session.shopId) sessionStorage.setItem("authShopId", String(session.shopId));
     return session;
   },
@@ -192,6 +196,7 @@ export const api = {
     sessionStorage.removeItem("authToken");
     sessionStorage.removeItem("authRole");
     sessionStorage.removeItem("authEmail");
+    sessionStorage.removeItem("authUserId");
     sessionStorage.removeItem("authShopId");
   },
 
@@ -202,6 +207,9 @@ export const api = {
       token,
       email: sessionStorage.getItem("authEmail") ?? "",
       role: sessionStorage.getItem("authRole") ?? "",
+      userId: sessionStorage.getItem("authUserId")
+        ? parseInt(sessionStorage.getItem("authUserId")!, 10)
+        : undefined,
       shopId: sessionStorage.getItem("authShopId")
         ? parseInt(sessionStorage.getItem("authShopId")!, 10)
         : undefined,
@@ -254,7 +262,15 @@ export const api = {
     aircraftTypes?: string;
     minStock?: number;
     defaultShopId?: number;
+    initialQuantity?: number;
+    initialShopId?: number;
   }) => request<any>("/api/materials", { method: "POST", body: JSON.stringify(data) }).then(adaptMaterialDetail),
+
+  setMaterialTechnicianVisibility: (materialId: number, hiddenFromTechnicians: boolean) =>
+    request<void>(`/api/materials/${materialId}/technician-visibility`, {
+      method: "PATCH",
+      body: JSON.stringify({ hiddenFromTechnicians }),
+    }),
 
   updateMaterial: (
     id: number,
@@ -310,10 +326,49 @@ export const api = {
   releaseRequest: (id: number) =>
     request<any>(`/api/materialrequests/${id}/release`, { method: "PATCH" }).then(adaptRequest),
 
-  issueRequest: (id: number, collectedByUserId: number, flightNumber?: string) =>
+  rejectRequest: (id: number, notes?: string) =>
+    request<any>(`/api/materialrequests/${id}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ notes }),
+    }).then(adaptRequest),
+
+  getTechnicians: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<{ userId: number; name: string; email: string; role: string; shopId?: number }[]>(
+      `/api/users/technicians${q}`
+    );
+  },
+
+  createTechnician: (data: { name: string; email: string; password: string }) =>
+    request<{ userId: number; name: string; email: string }>("/api/users/technicians", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  getShopActivity: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<{
+      requests: MaterialRequest[];
+      recentUsages: {
+        usageId: number;
+        materialName: string;
+        partNumber: string;
+        userName: string;
+        quantityUsed: number;
+        usedAt: string;
+      }[];
+      technicians: { userId: number; name: string; email: string }[];
+    }>(`/api/users/shop-activity${q}`).then((raw) => ({
+      requests: (raw.requests ?? []).map(adaptRequest),
+      recentUsages: raw.recentUsages ?? [],
+      technicians: raw.technicians ?? [],
+    }));
+  },
+
+  issueRequest: (id: number, collectedByUserId: number) =>
     request<any>(`/api/materialrequests/${id}/issue`, {
       method: "PATCH",
-      body: JSON.stringify({ collectedByUserId, flightNumber }),
+      body: JSON.stringify({ collectedByUserId }),
     }).then(adaptRequest),
 
   cancelRequest: (id: number, notes?: string) =>
@@ -322,12 +377,28 @@ export const api = {
       body: JSON.stringify({ notes }),
     }).then(adaptRequest),
 
-  getAlerts: () => request<any[]>("/api/alerts").then((items) => items as Alert[]),
+  getAlerts: () =>
+    request<any[]>("/api/alerts").then((items) =>
+      items.map(
+        (raw): Alert => ({
+          alertId: raw.alertId,
+          materialId: raw.materialId,
+          materialName: raw.materialName ?? "",
+          type: raw.type ?? "",
+          currentQuantity: raw.currentQuantity ?? 0,
+          threshold: raw.threshold,
+          triggeredAt: raw.triggeredAt,
+          requestId: raw.requestId,
+          note: raw.note,
+          createdAt: raw.createdAt,
+        })
+      )
+    ),
 
-  resolveAlert: (id: number, note: string) =>
+  resolveAlert: (id: number, note: string, resolvedBy?: number) =>
     request<void>(`/api/alerts/${id}/resolve`, {
       method: "PATCH",
-      body: JSON.stringify({ resolvedNote: note, resolvedBy: 1 }),
+      body: JSON.stringify({ resolvedNote: note, resolvedBy: resolvedBy ?? 0 }),
     }),
 
   recordReturn: (data: {
@@ -349,4 +420,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ reorderNote }),
     }),
+
+  markRequestReady: (requestId: number, notes?: string) =>
+    request<MaterialRequest>(`/api/procurement/requests/${requestId}/ready`, {
+      method: "PATCH",
+      body: JSON.stringify({ notes }),
+    }),
+
+  getAuditLogs: (page: number = 1, pageSize: number = 50) =>
+    request<{ items: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }>(
+      `/api/auditlogs?page=${page}&pageSize=${pageSize}`
+    ),
 };

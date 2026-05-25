@@ -8,6 +8,7 @@ import {
   Bell,
   Package,
   Warehouse,
+  Users,
   Info,
 } from "lucide-react";
 import { AuthSession, ViewState } from "../types";
@@ -22,6 +23,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   procurement: Package,
   "stock-by-shop": Warehouse,
   categories: Layers,
+  team: Users,
 };
 
 function isNavActive(item: NavItem, currentView: ViewState): boolean {
@@ -34,9 +36,10 @@ interface AppSidebarProps {
   currentView: ViewState;
   onNavigate: (view: ViewState) => void;
   lastUpdated?: string;
+  alertBadgeCount?: number;
 }
 
-export default function AppSidebar({ session, currentView, onNavigate, lastUpdated }: AppSidebarProps) {
+export default function AppSidebar({ session, currentView, onNavigate, lastUpdated, alertBadgeCount = 0 }: AppSidebarProps) {
   const items = getNavItemsForRole(session.role);
 
   return (
@@ -63,7 +66,12 @@ export default function AppSidebar({ session, currentView, onNavigate, lastUpdat
               }`}
             >
               <Icon className="w-4 h-4 shrink-0" />
-              <span>{item.label}</span>
+              <span className="flex-1 text-left">{item.label}</span>
+              {item.id === "alerts" && alertBadgeCount > 0 && (
+                <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full bg-[#e2b007] text-[#006039] text-[10px] font-bold">
+                  {alertBadgeCount > 99 ? "99+" : alertBadgeCount}
+                </span>
+              )}
             </button>
           );
         })}

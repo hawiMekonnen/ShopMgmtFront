@@ -27,7 +27,7 @@ interface StockBatch {
   receivedAt: string;
 }
 
-const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:5222";
+const API_BASE_URL = process.env.API_BASE_URL ?? "https://localhost:7120";
 
 async function main() {
   const app = express();
@@ -39,8 +39,8 @@ async function main() {
     createProxyMiddleware({
       target: API_BASE_URL,
       changeOrigin: true,
+      secure: false,
       pathFilter: "/api",
-      // Forward errors to the client instead of crashing the proxy
       on: {
         error: (err, req, res) => {
           console.error("[proxy] error:", err.message);
@@ -50,6 +50,16 @@ async function main() {
           });
         },
       },
+    })
+  );
+
+  app.use(
+    createProxyMiddleware({
+      target: API_BASE_URL,
+      changeOrigin: true,
+      secure: false,
+      pathFilter: "/shopMgmtHub",
+      ws: true,
     })
   );
 
