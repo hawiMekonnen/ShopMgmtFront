@@ -41,13 +41,13 @@ export const NAV_ITEMS: NavItem[] = [
     id: "dashboard",
     view: "dashboard",
     label: "Dashboard",
-    roles: ["Admin", "ShopManager", "Finance", "Procurement", "Technician"],
+    roles: ["Admin", "ShopManager", "Finance", "Procurement"],
   },
   {
     id: "material-search",
     view: "material-search",
     label: "Search & Request",
-    roles: ["Technician", "ShopManager", "Admin"],
+    roles: ["Technician"],
   },
   {
     id: "material-requests",
@@ -65,7 +65,7 @@ export const NAV_ITEMS: NavItem[] = [
     id: "team",
     view: "team",
     label: "Team & activity",
-    roles: ["ShopManager"],
+    roles: ["ShopManager", "Admin"],
   },
   {
     id: "materials",
@@ -151,12 +151,12 @@ export function getRolePermissions(role: string): RolePermissions {
   const isFinance = r === "Finance";
 
   return {
-    canViewDashboard: isAdmin || isManager || isFinance || isProc || isTech,
+    canViewDashboard: isAdmin || isManager || isFinance || isProc,
     canViewMaterials: isAdmin || isManager || isProc,
     canManageCatalog: isAdmin || isProc,
     canViewCategories: isAdmin,
     canManageCategories: isAdmin,
-    canSearchAndRequest: isAdmin || isManager || isTech,
+    canSearchAndRequest: isTech,
     canViewRequests: isAdmin || isManager || isTech,
     canViewAlerts: isAdmin || isManager || isTech || isProc,
     canViewProcurement: isAdmin || isProc,
@@ -165,7 +165,7 @@ export function getRolePermissions(role: string): RolePermissions {
     canDeleteMaterial: isAdmin,
     canSubmitRequest: isTech,
     canRejectRequest: isAdmin || isManager,
-    canManageTeam: isManager,
+    canManageTeam: isManager || isAdmin,
     canReleaseForIssue: isAdmin || isManager,
     canConfirmPickup: isAdmin || isManager || isTech,
     canRecordReturn: isAdmin || isManager || isTech,

@@ -304,7 +304,7 @@ export default function App() {
     if (autoRefresh && (currentView.type === "materials" || currentView.type === "dashboard")) {
       autoRefreshTimerRef.current = setInterval(() => {
         loadAllMaterials();
-        loadGlobalDashboardStats();
+        if (permissions?.canViewDashboard) loadGlobalDashboardStats();
       }, 12000);
     } else {
       if (autoRefreshTimerRef.current) {
@@ -317,7 +317,7 @@ export default function App() {
         clearInterval(autoRefreshTimerRef.current);
       }
     };
-  }, [autoRefresh, currentView.type, loadAllMaterials, loadGlobalDashboardStats]);
+  }, [autoRefresh, currentView.type, loadAllMaterials, loadGlobalDashboardStats, permissions?.canViewDashboard]);
 
   // Navigate utility with automated clear state
   const navigate = (view: ViewState) => {
@@ -1295,7 +1295,7 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
   const [unit, setUnit] = useState<string>("");
   const [unitPrice, setUnitPrice] = useState<string>("");
   const [minStock, setMinStock] = useState<string>("10");
-  const [initialQuantity, setInitialQuantity] = useState<string>("0");
+  const [initialQuantity, setInitialQuantity] = useState<string>("1");
 
   const [saving, setSaving] = useState<boolean>(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
@@ -1333,6 +1333,12 @@ function MaterialFormView({ materialId, categories, onNavigate, addToast, execut
       minStock: parseFloat(minStock) || 0,
       initialQuantity: isEditMode ? 0 : parseFloat(initialQuantity) || 0,
     };
+
+    if (!isEditMode && (payload.initialQuantity ?? 0) <= 0) {
+      addToast("warning", "Initial quantity required", "Enter how many units were bought when creating a new material.");
+      setSaving(false);
+      return;
+    }
 
 
     // Client side guard

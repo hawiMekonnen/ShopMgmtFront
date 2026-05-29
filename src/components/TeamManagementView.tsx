@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Users, RefreshCw, UserPlus, ClipboardList, Package } from "lucide-react";
+import { Users, RefreshCw, UserPlus, ClipboardList, Package, Shield } from "lucide-react";
 import { api } from "../client";
 import { AuthSession, MaterialRequest } from "../types";
 import { requestStatusLabel } from "../requestStatus";
@@ -30,29 +30,54 @@ export default function TeamManagementView({
   addToast: ToastFn;
   executeApiCall: <T,>(call: () => Promise<T>, msg?: string) => Promise<T | null>;
 }) {
+  const isAdmin = session.role === "Admin";
   const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [requests, setRequests] = useState<MaterialRequest[]>([]);
   const [usages, setUsages] = useState<UsageRow[]>([]);
+  const [managers, setManagers] = useState<Technician[]>([]);
+  const [shops, setShops] = useState<{ id: number; name: string }[]>([]);
+  const [selectedShopId, setSelectedShopId] = useState<number | "">(session.shopId ?? "");
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [managerName, setManagerName] = useState("");
+  const [managerEmail, setManagerEmail] = useState("");
+  const [managerPassword, setManagerPassword] = useState("");
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const activity = await executeApiCall(() => api.getShopActivity(session.shopId));
+    const sid = selectedShopId === "" ? undefined : Number(selectedShopId);
+    const [activity, mgrs] = await Promise.all<any>([
+      executeApiCall(() => (api as any).getShopActivity(sid)),
+      isAdmin ? executeApiCall(() => (api as any).getShopManagers()) : Promise.resolve(null),
+    ]);
+
     if (activity) {
-      setTechnicians(activity.technicians);
-      setRequests(activity.requests);
-      setUsages(activity.recentUsages);
+      setTechnicians(activity.technicians ?? []);
+      setRequests(activity.requests ?? []);
+      setUsages(activity.recentUsages ?? []);
     }
+    if (mgrs) setManagers(mgrs as Technician[]);
     setLoading(false);
-  }, [session.shopId, executeApiCall]);
+  }, [selectedShopId, executeApiCall, isAdmin]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    (async () => {
+      const s = await executeApiCall(() => api.getShops());
+      if (s) {
+        setShops(s);
+        if (selectedShopId === "" && s.length > 0) {
+          setSelectedShopId(session.shopId ?? s[0].id);
+        }
+      }
+    })();
+  }, [executeApiCall, session.shopId, selectedShopId]);
+
+  useEffect(() => {
+    if (selectedShopId !== "") load();
+  }, [selectedShopId, load]);
 
   const createTechnician = async () => {
     if (!name.trim() || !email.trim() || password.length < 6) {
@@ -60,8 +85,12 @@ export default function TeamManagementView({
       return;
     }
     setCreating(true);
+    const sid = selectedShopId === "" ? undefined : Number(selectedShopId);
     const created = await executeApiCall(
-      () => api.createTechnician({ name: name.trim(), email: email.trim(), password }),
+      () =>
+        sid !== undefined
+          ? api.createTechnicianForShop(sid, { name: name.trim(), email: email.trim(), password })
+          : api.createTechnician({ name: name.trim(), email: email.trim(), password }),
       "Technician account created"
     );
     setCreating(false);
@@ -69,6 +98,30 @@ export default function TeamManagementView({
       setName("");
       setEmail("");
       setPassword("");
+      load();
+    }
+  };
+
+  const createManager = async () => {
+    const sid = selectedShopId === "" ? undefined : Number(selectedShopId);
+    if (!sid || !managerName.trim() || !managerEmail.trim() || managerPassword.length < 6) {
+      addToast("warning", "Invalid manager form", "Pick a shop and provide valid manager credentials.");
+      return;
+    }
+    const ok = await executeApiCall(
+      () =>
+        api.createShopManager({
+          name: managerName.trim(),
+          email: managerEmail.trim(),
+          password: managerPassword,
+          shopId: sid,
+        }),
+      "Shop manager account created"
+    );
+    if (ok) {
+      setManagerName("");
+      setManagerEmail("");
+      setManagerPassword("");
       load();
     }
   };
@@ -85,8 +138,67 @@ export default function TeamManagementView({
       </div>
 
       <p className="text-sm text-slate-500">
-        Create login accounts for technicians in your shop. They submit material requests; you approve or reject before release.
+        {isAdmin
+          ? "Admin can create shop-manager accounts for all 7 shops and review shop activities."
+          : "Create login accounts for technicians in your shop. They submit requests; you approve or reject before release."}
       </p>
+
+      {shops.length > 0 && (
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-semibold text-slate-600">Shop</label>
+          <select
+            value={selectedShopId}
+            onChange={(e) => setSelectedShopId(e.target.value ? Number(e.target.value) : "")}
+            className="border rounded-lg px-3 py-2 text-sm"
+          >
+            {shops.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
+            <Shield className="w-4 h-4 text-[#006039]" /> New shop manager account
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            <input
+              placeholder="Manager full name"
+              value={managerName}
+              onChange={(e) => setManagerName(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]"
+            />
+            <input
+              placeholder="Manager email"
+              type="email"
+              value={managerEmail}
+              onChange={(e) => setManagerEmail(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[180px]"
+            />
+            <input
+              placeholder="Temporary password"
+              type="password"
+              value={managerPassword}
+              onChange={(e) => setManagerPassword(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm w-40"
+            />
+            <button
+              type="button"
+              onClick={createManager}
+              className="px-4 py-2 bg-[#006039] text-white text-sm font-semibold rounded-lg"
+            >
+              Create manager
+            </button>
+          </div>
+          <div className="text-xs text-slate-500">
+            Existing managers: {managers.length}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
         <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">

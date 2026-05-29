@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Search, RefreshCw, Loader2, Package, Bell, Clock } from "lucide-react";
+import { Search, RefreshCw, Loader2, Package, Bell, Clock, DollarSign, CheckCircle } from "lucide-react";
 import { api, ApiError } from "../client";
 import { Material, MaterialRequest, AuthSession } from "../types";
 import { requestStatusLabel } from "../requestStatus";
@@ -128,6 +128,7 @@ export function MaterialRequestsView({
   const [requestMaterialId, setRequestMaterialId] = useState<number | null>(initialMaterialId ?? null);
   const [qty, setQty] = useState("1");
   const [wo, setWo] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -177,6 +178,25 @@ export function MaterialRequestsView({
         </button>
       </div>
 
+      {isManager && (
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-semibold text-slate-600">History filter</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="all">All</option>
+            <option value="Submitted">Submitted</option>
+            <option value="Approved">Approved</option>
+            <option value="ReadyForPickup">Ready for pickup</option>
+            <option value="Issued">Issued</option>
+            <option value="Cancelled">Cancelled</option>
+            <option value="Rejected">Rejected</option>
+          </select>
+        </div>
+      )}
+
       {session.role === "Technician" && requestMaterialId && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
           <p className="text-sm font-semibold">New request for material #{requestMaterialId}</p>
@@ -195,7 +215,9 @@ export function MaterialRequestsView({
       )}
 
       <div className="bg-white rounded-xl border border-slate-200 divide-y">
-        {requests.map((r) => (
+        {requests
+          .filter((r) => (statusFilter === "all" ? true : String(r.status) === statusFilter))
+          .map((r) => (
           <div key={r.requestId} className="p-4 flex flex-wrap justify-between gap-2 items-center">
             <div className="min-w-0 flex-1">
               <p className="font-semibold text-sm">
@@ -207,6 +229,17 @@ export function MaterialRequestsView({
                 <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
                   {requestStatusLabel(r.status)}
                 </span>
+                {r.status === "Issued" && (
+                  <span className="inline-flex items-center gap-1 ml-2 text-[11px] font-semibold text-emerald-700">
+                    <CheckCircle className="w-4 h-4" /> Picked up
+                  </span>
+                )}
+                {r.createdAt && (
+                  <>
+                    <span className="mx-1.5 text-slate-300">·</span>
+                    <span className="text-slate-400">{new Date(r.createdAt).toLocaleString()}</span>
+                  </>
+                )}
               </p>
               <p className="text-xs mt-1.5">
                 <span className="font-bold text-slate-800">Requested by:</span>{" "}
@@ -233,7 +266,7 @@ export function MaterialRequestsView({
                   <button
                     type="button"
                     onClick={() =>
-                      executeApiCall(() => api.cancelRequest(r.requestId, "Rejected by shop manager"), "Request rejected").then(load)
+                      executeApiCall(() => api.rejectRequest(r.requestId, "Rejected by shop manager"), "Request rejected").then(load)
                     }
                     className="text-xs px-2 py-1 bg-rose-100 text-rose-800 font-semibold rounded-lg hover:bg-rose-200"
                   >
@@ -245,7 +278,7 @@ export function MaterialRequestsView({
                 <button
                   onClick={() =>
                     executeApiCall(
-                      () => api.issueRequest(r.requestId, r.requestedByUserId, r.aircraftOrWorkOrder),
+                      () => api.issueRequest(r.requestId, r.requestedByUserId),
                       "Issued — stock collected"
                     ).then(load)
                   }
@@ -397,18 +430,29 @@ export function ProcurementView({
   const [shopId, setShopId] = useState<number | "">("");
   const [requests, setRequests] = useState<any[]>([]);
   const [requestNotes, setRequestNotes] = useState<Record<number, string>>({});
+  const [budget, setBudget] = useState<any | null>(null);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [purchaseMaterialId, setPurchaseMaterialId] = useState<number | "">("");
+  const [purchaseQty, setPurchaseQty] = useState("0");
+  const [purchaseCost, setPurchaseCost] = useState("0");
 
   const load = async () => {
     const sid = shopId === "" ? undefined : shopId;
-    const a = await executeApiCall(() => api.getProcurementActions(sid));
-    if (a) setActions(a);
+    const [a, rList, b, mats] = await Promise.all([
+      executeApiCall(() => api.getProcurementActions(sid)),
+      executeApiCall(() => api.getMaterialRequests(sid)),
+      // getProcurementBudgetReport may not be typed on the api client in some builds
+      // cast to any to avoid TS error while still calling the runtime method if present
+      executeApiCall(() => (api as any).getProcurementBudgetReport?.(sid)),
+      executeApiCall(() => api.getMaterials(sid)),
+    ]);
 
-    const rList = await executeApiCall(() => api.getMaterialRequests(sid));
+    if (a) setActions(a);
+    if (b) setBudget(b);
+    if (mats) setMaterials(mats);
+
     if (rList) {
-      // Filter requests that are in Approved or Submitted status so Procurement can coordinate them
-      const pending = rList.filter(
-        (x) => x.status === "Approved" || x.status === "Submitted"
-      );
+      const pending = rList.filter((x) => x.status === "Approved" || x.status === "Submitted");
       setRequests(pending);
     }
   };
@@ -427,12 +471,43 @@ export function ProcurementView({
     if (shopId !== "") load();
   }, [shopId]);
 
+  const recordPurchase = async () => {
+    if (!purchaseMaterialId || shopId === "") return;
+    const quantity = parseFloat(purchaseQty);
+    const cost = parseFloat(purchaseCost);
+    if (quantity <= 0 || cost <= 0) return;
+    const ok = await executeApiCall(
+      () =>
+        api.receiveStock(Number(purchaseMaterialId), {
+          quantityReceived: quantity,
+          costTotal: cost,
+          receivedAt: new Date().toISOString(),
+          shopId: Number(shopId),
+        }),
+      "Purchase recorded"
+    );
+    if (ok) {
+      setPurchaseQty("0");
+      setPurchaseCost("0");
+      load();
+    }
+  };
+
+  const availableByMaterialId = React.useMemo(() => {
+    const map = new Map<number, number>();
+    for (const m of materials) map.set(m.id, m.available ?? 0);
+    return map;
+  }, [materials]);
+
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-        <Package className="w-6 h-6" /> Procurement inbox
+        <Package className="w-6 h-6" /> Procurement inbox & budget
       </h2>
-      <p className="text-sm text-slate-500">Actions for the selected shop location. Use Stock by shop for full on-hand / on-order view.</p>
+      <p className="text-sm text-slate-500">
+        Shop-divided procurement view: material actions, request inbox, and spending report for admin review.
+      </p>
+
       {shops.length > 0 && (
         <div className="flex items-center gap-2">
           <label className="text-xs font-semibold text-slate-600">Shop</label>
@@ -449,6 +524,107 @@ export function ProcurementView({
           </select>
         </div>
       )}
+
+      {budget && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="bg-white border rounded-xl p-4">
+            <p className="text-xs text-slate-500">Total spent</p>
+            <p className="text-xl font-bold text-[#006039]">{budget.totalSpent?.toLocaleString?.() ?? budget.totalSpent} ETB</p>
+          </div>
+          <div className="bg-white border rounded-xl p-4">
+            <p className="text-xs text-slate-500">This month</p>
+            <p className="text-xl font-bold text-amber-700">{budget.monthlySpent?.toLocaleString?.() ?? budget.monthlySpent} ETB</p>
+          </div>
+          <div className="bg-white border rounded-xl p-4">
+            <p className="text-xs text-slate-500">Total quantity purchased</p>
+            <p className="text-xl font-bold text-slate-800">{budget.totalQuantityPurchased}</p>
+          </div>
+        </div>
+      )}
+
+      {budget?.purchases?.length > 0 && (
+        <div className="bg-white rounded-xl border overflow-hidden">
+          <div className="p-4 border-b flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-700">Recent purchases (qty, spend, available)</h3>
+            <span className="text-xs text-slate-400">Showing latest {Math.min(10, budget.purchases.length)}</span>
+          </div>
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-2 text-left">Material</th>
+                <th className="px-4 py-2 text-center">Bought</th>
+                <th className="px-4 py-2 text-right">Spent (ETB)</th>
+                <th className="px-4 py-2 text-center">Available</th>
+                <th className="px-4 py-2 text-right">Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {budget.purchases.slice(0, 10).map((p: any) => (
+                <tr key={p.batchId} className="border-t border-slate-100">
+                  <td className="px-4 py-2">
+                    <div className="font-mono text-xs text-[#006039]">{p.partNumber}</div>
+                    <div className="font-semibold">{p.materialName}</div>
+                  </td>
+                  <td className="px-4 py-2 text-center font-mono">{p.quantityReceived}</td>
+                  <td className="px-4 py-2 text-right font-mono">{p.costTotal}</td>
+                  <td className="px-4 py-2 text-center font-mono">
+                    {availableByMaterialId.get(p.materialId) ?? 0}
+                  </td>
+                  <td className="px-4 py-2 text-right text-xs text-slate-500">
+                    {p.receivedAt ? new Date(p.receivedAt).toLocaleString() : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border p-4 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2 text-slate-700">
+          <DollarSign className="w-4 h-4 text-[#006039]" /> Record purchase (stock intake with cost)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <select
+            value={purchaseMaterialId}
+            onChange={(e) => setPurchaseMaterialId(e.target.value ? Number(e.target.value) : "")}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="">Select material</option>
+            {materials.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.partNumber} — {m.name}
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={purchaseQty}
+            onChange={(e) => setPurchaseQty(e.target.value)}
+            placeholder="Quantity bought"
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          />
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={purchaseCost}
+            onChange={(e) => setPurchaseCost(e.target.value)}
+            placeholder="Total ETB spent"
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          />
+          <button
+            type="button"
+            onClick={recordPurchase}
+            className="px-3 py-2 rounded-lg bg-[#006039] text-white text-sm font-semibold"
+          >
+            Save purchase
+          </button>
+        </div>
+      </div>
+
       <div className="bg-white rounded-xl border divide-y">
         {actions.map((a, i) => (
           <div key={i} className="p-4 text-sm flex justify-between gap-4">
@@ -460,7 +636,7 @@ export function ProcurementView({
               <button
                 onClick={() =>
                   executeApiCall(
-                    () => api.markReorder(a.materialId, "Reorder placed (demo)"),
+                    () => api.markReorder(a.materialId, "Reorder placed"),
                     "Reorder flagged"
                   ).then(load)
                 }
@@ -474,15 +650,10 @@ export function ProcurementView({
         {actions.length === 0 && <p className="p-6 text-center text-slate-400">No procurement actions.</p>}
       </div>
 
-      {/* Material Requests Delivery Coordination section */}
       <div className="space-y-4 pt-4">
         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-          <Clock className="w-5 h-5 text-[#006039]" /> Material Requests Coordination
+          <Clock className="w-5 h-5 text-[#006039]" /> Requests by selected shop
         </h3>
-        <p className="text-xs text-slate-500">
-          Coordinate and state delivery/pickup details for active technician requests. Marking ready notifies the shop manager and technician.
-        </p>
-
         <div className="bg-white rounded-xl border divide-y overflow-hidden shadow-xs">
           {requests.map((r) => (
             <div key={r.requestId} className="p-4 text-sm flex flex-col sm:flex-row justify-between gap-4 items-start sm:items-center">
@@ -498,29 +669,18 @@ export function ProcurementView({
                   </span>
                 </div>
                 <p className="text-xs text-slate-500">
-                  Requested Qty: <span className="font-bold text-slate-700">{r.quantity}</span> 
-                  <span className="mx-2">·</span> 
+                  Requested Qty: <span className="font-bold text-slate-700">{r.quantity}</span>
+                  <span className="mx-2">·</span>
                   Shop: <span className="font-bold text-slate-700">{r.shopName || `Shop #${r.shopId}`}</span>
-                  <span className="mx-2">·</span> 
+                  <span className="mx-2">·</span>
                   By: <span className="font-bold text-[#006039]">{r.requestedByName || "Technician"}</span>
                 </p>
-                {r.aircraftOrWorkOrder && (
-                  <p className="text-xs text-slate-500 font-mono bg-slate-50 px-2 py-0.5 rounded inline-block">
-                    Work Order: {r.aircraftOrWorkOrder}
-                  </p>
-                )}
-                {r.notes && (
-                  <p className="text-xs italic text-slate-400">
-                    Tech/Manager Notes: "{r.notes}"
-                  </p>
-                )}
               </div>
 
-              {/* Delivery coordination input and action */}
               <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                 <input
                   type="text"
-                  placeholder="State delivery/pickup time (e.g. 2:00 PM)"
+                  placeholder="Delivery note (optional)"
                   value={requestNotes[r.requestId] || ""}
                   onChange={(e) => setRequestNotes({ ...requestNotes, [r.requestId]: e.target.value })}
                   className="border border-slate-200 rounded-lg px-3 py-1.5 text-xs flex-1 sm:w-64 focus:outline-none focus:ring-1 focus:ring-[#006039]"
@@ -529,12 +689,12 @@ export function ProcurementView({
                   onClick={() =>
                     executeApiCall(
                       () => api.markRequestReady(r.requestId, requestNotes[r.requestId]),
-                      "Material marked ready & delivery scheduled"
+                      "Marked ready for pickup"
                     ).then(load)
                   }
                   disabled={r.status !== "Approved"}
-                  className="text-xs px-3 py-1.5 bg-[#006039] text-white font-semibold rounded-lg hover:bg-[#006039]/90 disabled:bg-slate-200 disabled:text-slate-400 select-none shadow-sm transition-colors cursor-pointer"
-                  title={r.status !== "Approved" ? "Must be approved/released by Shop Manager first" : "Mark ready and dispatch"}
+                  className="text-xs px-3 py-1.5 bg-[#006039] text-white font-semibold rounded-lg hover:bg-[#006039]/90 disabled:bg-slate-200 disabled:text-slate-400"
+                  title={r.status !== "Approved" ? "Manager must approve first" : "Mark ready"}
                 >
                   Mark Ready
                 </button>

@@ -105,8 +105,6 @@ function adaptMaterial(raw: any): Material {
     reorderPlaced: raw.reorderPlaced ?? false,
     reorderNote: raw.reorderNote,
     defaultShopId: raw.defaultShopId,
-    hiddenFromTechnicians: raw.hiddenFromTechnicians ?? false,
-    isOrderable: raw.isOrderable ?? (raw.available ?? raw.onHand ?? 0) > 0,
   };
 }
 
@@ -181,13 +179,11 @@ export const api = {
       token: res.token,
       email: res.email,
       role: res.role,
-      userId: res.userId,
       shopId: res.shopId,
     };
     sessionStorage.setItem("authToken", session.token);
     sessionStorage.setItem("authRole", session.role);
     sessionStorage.setItem("authEmail", session.email);
-    if (session.userId) sessionStorage.setItem("authUserId", String(session.userId));
     if (session.shopId) sessionStorage.setItem("authShopId", String(session.shopId));
     return session;
   },
@@ -196,7 +192,6 @@ export const api = {
     sessionStorage.removeItem("authToken");
     sessionStorage.removeItem("authRole");
     sessionStorage.removeItem("authEmail");
-    sessionStorage.removeItem("authUserId");
     sessionStorage.removeItem("authShopId");
   },
 
@@ -207,9 +202,6 @@ export const api = {
       token,
       email: sessionStorage.getItem("authEmail") ?? "",
       role: sessionStorage.getItem("authRole") ?? "",
-      userId: sessionStorage.getItem("authUserId")
-        ? parseInt(sessionStorage.getItem("authUserId")!, 10)
-        : undefined,
       shopId: sessionStorage.getItem("authShopId")
         ? parseInt(sessionStorage.getItem("authShopId")!, 10)
         : undefined,
@@ -332,39 +324,6 @@ export const api = {
       body: JSON.stringify({ notes }),
     }).then(adaptRequest),
 
-  getTechnicians: (shopId?: number) => {
-    const q = shopId ? `?shopId=${shopId}` : "";
-    return request<{ userId: number; name: string; email: string; role: string; shopId?: number }[]>(
-      `/api/users/technicians${q}`
-    );
-  },
-
-  createTechnician: (data: { name: string; email: string; password: string }) =>
-    request<{ userId: number; name: string; email: string }>("/api/users/technicians", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  getShopActivity: (shopId?: number) => {
-    const q = shopId ? `?shopId=${shopId}` : "";
-    return request<{
-      requests: MaterialRequest[];
-      recentUsages: {
-        usageId: number;
-        materialName: string;
-        partNumber: string;
-        userName: string;
-        quantityUsed: number;
-        usedAt: string;
-      }[];
-      technicians: { userId: number; name: string; email: string }[];
-    }>(`/api/users/shop-activity${q}`).then((raw) => ({
-      requests: (raw.requests ?? []).map(adaptRequest),
-      recentUsages: raw.recentUsages ?? [],
-      technicians: raw.technicians ?? [],
-    }));
-  },
-
   issueRequest: (id: number, collectedByUserId: number) =>
     request<any>(`/api/materialrequests/${id}/issue`, {
       method: "PATCH",
@@ -426,6 +385,32 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ notes }),
     }),
+
+  getProcurementBudgetReport: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<any>(`/api/procurement/budget-report${q}`);
+  },
+
+  getTechnicians: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<any[]>(`/api/users/technicians${q}`);
+  },
+
+  createTechnician: (data: { name: string; email: string; password: string }) =>
+    request<any>("/api/users/technicians", { method: "POST", body: JSON.stringify(data) }),
+
+  createTechnicianForShop: (shopId: number, data: { name: string; email: string; password: string }) =>
+    request<any>(`/api/users/technicians?shopId=${shopId}`, { method: "POST", body: JSON.stringify(data) }),
+
+  getShopManagers: () => request<any[]>("/api/users/managers"),
+
+  createShopManager: (data: { name: string; email: string; password: string; shopId: number }) =>
+    request<any>("/api/users/managers", { method: "POST", body: JSON.stringify(data) }),
+
+  getShopActivity: (shopId?: number) => {
+    const q = shopId ? `?shopId=${shopId}` : "";
+    return request<any>(`/api/users/shop-activity${q}`);
+  },
 
   getAuditLogs: (page: number = 1, pageSize: number = 50) =>
     request<{ items: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }>(

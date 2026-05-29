@@ -98,6 +98,36 @@ export interface MaterialRequest {
   createdAt: string;
 }
 
+export interface UserAccount {
+  userId: number;
+  name: string;
+  email: string;
+  role: string;
+  shopId?: number;
+}
+
+export interface ProcurementPurchase {
+  batchId: number;
+  materialId: number;
+  materialName: string;
+  partNumber: string;
+  shopId?: number;
+  shopName: string;
+  quantityReceived: number;
+  unitPrice: number;
+  costTotal: number;
+  unit: string;
+  receivedAt: string;
+}
+
+export interface ProcurementBudgetReport {
+  totalSpent: number;
+  monthlySpent: number;
+  totalQuantityPurchased: number;
+  byShop: { shopId?: number; shopName: string; totalSpent: number; totalQuantity: number }[];
+  purchases: ProcurementPurchase[];
+}
+
 export interface Alert {
   alertId: number;
   materialId: number;
