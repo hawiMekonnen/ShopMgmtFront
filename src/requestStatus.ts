@@ -4,7 +4,8 @@ export type RequestStatusKey =
   | "ReadyForPickup"
   | "Issued"
   | "Cancelled"
-  | "Rejected";
+  | "Rejected"
+  | "PendingManagerApproval";
 
 const STATUS_BY_NUMBER: Record<number, RequestStatusKey> = {
   0: "Submitted",
@@ -13,15 +14,17 @@ const STATUS_BY_NUMBER: Record<number, RequestStatusKey> = {
   3: "Issued",
   4: "Cancelled",
   5: "Rejected",
+  6: "PendingManagerApproval",
 };
 
 const STATUS_LABELS: Record<RequestStatusKey, string> = {
   Submitted: "Submitted",
-  Approved: "Approved by manager",
+  Approved: "Approved (Released)",
   ReadyForPickup: "Ready for pickup",
   Issued: "Issued",
   Cancelled: "Cancelled",
   Rejected: "Rejected",
+  PendingManagerApproval: "Pending manager approval",
 };
 
 /** API may return enum as number (0–4) or string name. */

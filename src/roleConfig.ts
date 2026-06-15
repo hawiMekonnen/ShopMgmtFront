@@ -1,6 +1,6 @@
 import { ViewState } from "./types";
 
-export type AppRole = "Technician" | "ShopManager" | "Procurement" | "Admin" | "Finance";
+export type AppRole = "Employee" | "Manager" | "Procurement" | "Admin" | "Finance";
 
 export type NavViewType = ViewState["type"];
 
@@ -11,10 +11,13 @@ export interface NavItem {
   roles: AppRole[];
   /** Also active for child routes e.g. material-detail */
   activeWhen?: (view: ViewState) => boolean;
+  /** Show pending-request badge (manager team nav) */
+  badgeKey?: "pendingApprovals";
 }
 
 export interface RolePermissions {
   canViewDashboard: boolean;
+  canViewManagerOverview: boolean;
   canViewMaterials: boolean;
   canManageCatalog: boolean;
   canViewCategories: boolean;
@@ -32,52 +35,53 @@ export interface RolePermissions {
   canReleaseForIssue: boolean;
   canConfirmPickup: boolean;
   canRecordReturn: boolean;
+  canManageUsers: boolean;
+  canViewAdminBudget: boolean;
 }
-
-const ALL_ROLES: AppRole[] = ["Technician", "ShopManager", "Procurement", "Admin", "Finance"];
 
 export const NAV_ITEMS: NavItem[] = [
   {
     id: "dashboard",
     view: "dashboard",
     label: "Dashboard",
-    roles: ["Admin", "ShopManager", "Finance", "Procurement"],
+    roles: ["Admin", "Finance", "Procurement"],
+  },
+  {
+    id: "manager-overview",
+    view: "manager-overview",
+    label: "Overview",
+    roles: ["Manager"],
   },
   {
     id: "material-search",
     view: "material-search",
     label: "Search & Request",
-    roles: ["Technician"],
+    roles: ["Employee"],
+  },
+  {
+    id: "material-search-mgr",
+    view: "material-search",
+    label: "Request materials",
+    roles: ["Manager"],
   },
   {
     id: "material-requests",
     view: "material-requests",
     label: "Request queue",
-    roles: ["Technician", "Admin"],
-  },
-  {
-    id: "material-requests-mgr",
-    view: "material-requests",
-    label: "Approve requests",
-    roles: ["ShopManager"],
+    roles: ["Employee"],
   },
   {
     id: "team",
     view: "team",
-    label: "Team & activity",
-    roles: ["ShopManager", "Admin"],
+    label: "Team & requests",
+    roles: ["Manager"],
+    badgeKey: "pendingApprovals",
   },
   {
-    id: "materials",
-    view: "materials",
-    label: "My shop stock",
-    roles: ["ShopManager"],
-    activeWhen: (v) =>
-      v.type === "materials" ||
-      v.type === "material-new" ||
-      v.type === "material-edit" ||
-      v.type === "material-detail" ||
-      v.type === "material-receive",
+    id: "user-admin",
+    view: "user-admin",
+    label: "User accounts & reports",
+    roles: ["Admin"],
   },
   {
     id: "materials-admin",
@@ -95,19 +99,13 @@ export const NAV_ITEMS: NavItem[] = [
     id: "alerts",
     view: "alerts",
     label: "Alerts",
-    roles: ["Technician", "ShopManager", "Procurement", "Admin"],
+    roles: ["Employee", "Manager", "Procurement", "Admin"],
   },
   {
-    id: "procurement",
-    view: "procurement",
+    id: "procurement-inbox",
+    view: "procurement-inbox",
     label: "Procurement inbox",
-    roles: ["Procurement", "Admin"],
-  },
-  {
-    id: "stock-by-shop",
-    view: "stock-by-shop",
-    label: "Stock by shop",
-    roles: ["Procurement", "Admin"],
+    roles: ["Procurement"],
   },
   {
     id: "categories",
@@ -115,21 +113,29 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Categories (admin)",
     roles: ["Admin"],
   },
+  {
+    id: "budget-admin",
+    view: "budget-admin",
+    label: "Budget report",
+    roles: ["Admin"],
+  },
 ];
 
 export function normalizeRole(role: string): AppRole {
-  const known: AppRole[] = ["Technician", "ShopManager", "Procurement", "Admin", "Finance"];
-  return (known.includes(role as AppRole) ? role : "Technician") as AppRole;
+  const known: AppRole[] = ["Employee", "Manager", "Procurement", "Admin", "Finance"];
+  if (role === "Technician") return "Employee";
+  if (role === "ShopManager") return "Manager";
+  return (known.includes(role as AppRole) ? role : "Employee") as AppRole;
 }
 
 export function getDefaultView(role: string): ViewState {
   switch (normalizeRole(role)) {
-    case "Technician":
+    case "Employee":
       return { type: "material-search" };
-    case "ShopManager":
-      return { type: "material-requests" };
+    case "Manager":
+      return { type: "manager-overview" };
     case "Procurement":
-      return { type: "procurement" };
+      return { type: "procurement-inbox" };
     case "Finance":
       return { type: "dashboard" };
     case "Admin":
@@ -145,30 +151,32 @@ export function getHomeView(role: string): ViewState {
 export function getRolePermissions(role: string): RolePermissions {
   const r = normalizeRole(role);
   const isAdmin = r === "Admin";
-  const isManager = r === "ShopManager";
-  const isTech = r === "Technician";
+  const isManager = r === "Manager";
+  const isEmployee = r === "Employee";
   const isProc = r === "Procurement";
   const isFinance = r === "Finance";
 
   return {
-    canViewDashboard: isAdmin || isManager || isFinance || isProc,
-    canViewMaterials: isAdmin || isManager || isProc,
+    canViewDashboard: isAdmin || isFinance || isProc,
+    canViewManagerOverview: isManager,
+    canViewMaterials: isAdmin || isProc,
     canManageCatalog: isAdmin || isProc,
     canViewCategories: isAdmin,
     canManageCategories: isAdmin,
-    canSearchAndRequest: isTech,
-    canViewRequests: isAdmin || isManager || isTech,
-    canViewAlerts: isAdmin || isManager || isTech || isProc,
-    canViewProcurement: isAdmin || isProc,
-    canViewStockByShop: isAdmin || isProc,
-    canReceiveStock: isAdmin || isManager,
+    canSearchAndRequest: isEmployee || isManager,
+    canViewRequests: isAdmin || isManager || isEmployee,
+    canViewAlerts: isAdmin || isManager || isProc || isEmployee,
+    canViewProcurement: isProc,
+    canReceiveStock: isAdmin,
     canDeleteMaterial: isAdmin,
-    canSubmitRequest: isTech,
+    canSubmitRequest: isEmployee || isManager,
     canRejectRequest: isAdmin || isManager,
-    canManageTeam: isManager || isAdmin,
-    canReleaseForIssue: isAdmin || isManager,
-    canConfirmPickup: isAdmin || isManager || isTech,
-    canRecordReturn: isAdmin || isManager || isTech,
+    canManageTeam: isManager,
+    canReleaseForIssue: isAdmin,
+    canConfirmPickup: isAdmin || isManager || isEmployee,
+    canRecordReturn: isAdmin || isManager || isEmployee,
+    canManageUsers: isAdmin,
+    canViewAdminBudget: isAdmin,
   };
 }
 
@@ -182,6 +190,8 @@ export function canAccessView(role: string, view: ViewState): boolean {
   switch (view.type) {
     case "dashboard":
       return perms.canViewDashboard;
+    case "manager-overview":
+      return perms.canViewManagerOverview;
     case "materials":
     case "material-new":
     case "material-edit":
@@ -198,10 +208,12 @@ export function canAccessView(role: string, view: ViewState): boolean {
       return perms.canManageTeam;
     case "alerts":
       return perms.canViewAlerts;
-    case "procurement":
+    case "procurement-inbox":
       return perms.canViewProcurement;
-    case "stock-by-shop":
-      return perms.canViewStockByShop;
+    case "user-admin":
+      return perms.canManageUsers;
+    case "budget-admin":
+      return perms.canViewAdminBudget;
     default:
       return false;
   }
@@ -209,10 +221,10 @@ export function canAccessView(role: string, view: ViewState): boolean {
 
 export function getRoleSubtitle(role: string): string {
   switch (normalizeRole(role)) {
-    case "Technician":
-      return "Find parts, submit requests, collect stock when ready.";
-    case "ShopManager":
-      return "Approve technician requests, manage team accounts, and issue stock.";
+    case "Employee":
+      return "Request materials, check limits, and get collection alerts.";
+    case "Manager":
+      return "Approve employee requests, manage your team, and request materials.";
     case "Procurement":
       return "Stock by location, inbox actions, and on-order tracking.";
     case "Finance":

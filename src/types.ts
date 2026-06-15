@@ -76,10 +76,13 @@ export interface DashboardStats {
 
 export interface AuthSession {
   token: string;
+  loginId: string;
+  name: string;
   email: string;
   role: string;
   userId?: number;
   shopId?: number;
+  mustChangePassword?: boolean;
 }
 
 export interface MaterialRequest {
@@ -96,14 +99,21 @@ export interface MaterialRequest {
   status: RequestStatusKey;
   notes?: string;
   createdAt: string;
+  managerApprovedAt?: string;
+  managerApprovedByUserId?: number;
+  scheduledPickupTime?: string;
 }
 
 export interface UserAccount {
   userId: number;
+  loginId: string;
   name: string;
   email: string;
   role: string;
   shopId?: number;
+  managerId?: number;
+  maxRequestsPerMonth?: number;
+  maxQuantityPerMonth?: number;
 }
 
 export interface ProcurementPurchase {
@@ -137,21 +147,25 @@ export interface Alert {
   threshold?: number;
   triggeredAt?: string;
   requestId?: number;
+  createdBy?: number;
+  requestShopId?: number;
   note?: string;
   createdAt?: string;
 }
 
 export type ViewState =
   | { type: "dashboard" }
+  | { type: "manager-overview" }
   | { type: "materials" }
   | { type: "material-search" }
   | { type: "material-requests" }
   | { type: "team" }
   | { type: "alerts" }
-  | { type: "procurement" }
-  | { type: "stock-by-shop" }
+  | { type: "procurement-inbox" }
   | { type: "material-new" }
   | { type: "material-edit"; id: number }
   | { type: "material-detail"; id: number }
   | { type: "material-receive"; id: number }
-  | { type: "categories" };
+  | { type: "categories" }
+  | { type: "user-admin" }
+  | { type: "budget-admin" };

@@ -35,11 +35,11 @@ import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewSta
 import { startRealtimeHub, stopRealtimeHub, filterAlertsForRole, alertTypeLabel } from "./realtime";
 import ToastContainer, { ToastMessage } from "./components/Toast";
 import LoginView from "./components/LoginView";
-import AppSidebar from "./components/AppSidebar";
-import AccessDenied from "./components/AccessDenied";
-import { MaterialSearchView, MaterialRequestsView, AlertsView, ProcurementView } from "./components/AmosWorkflowViews";
+import { MaterialSearchView, MaterialRequestsView, AlertsView, ProcurementInboxView } from "./components/AmosWorkflowViews";
 import TeamManagementView from "./components/TeamManagementView";
-import StockByShopView from "./components/StockByShopView";
+import ManagerOverviewView from "./components/ManagerOverviewView";
+import UserAdminView from "./components/UserAdminView";
+import AdminBudgetView from "./components/AdminBudgetView";
 import {
   canAccessView,
   getDefaultView,
@@ -48,6 +48,8 @@ import {
   normalizeRole,
   type RolePermissions,
 } from "./roleConfig";
+import AppSidebar from "./components/AppSidebar";
+import AccessDenied from "./components/AccessDenied";
 
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(() => api.getSession());
@@ -153,8 +155,8 @@ export default function App() {
 
   const resolveInventoryShopId = useCallback((): number | undefined => {
     if (!session) return undefined;
+    if (session.role === "ShopManager" && session.shopId) return session.shopId;
     const role = normalizeRole(session.role);
-    if (role === "ShopManager" && session.shopId) return session.shopId;
     if (role === "Admin" && inventoryShopId != null) return inventoryShopId;
     return undefined;
   }, [session, inventoryShopId]);
@@ -221,7 +223,7 @@ export default function App() {
     if (!session || !permissions?.canViewAlerts) return;
     try {
       const alerts = await api.getAlerts();
-      setActiveAlertCount(filterAlertsForRole(alerts, session.role).length);
+      setActiveAlertCount(filterAlertsForRole(alerts, session.role, session.userId, session.shopId).length);
     } catch {
       // ignore — main API helper shows errors elsewhere
     }
@@ -234,7 +236,7 @@ export default function App() {
 
     const handleAlert = (alert: Alert) => {
       if (session.role === "Technician" && alert.type === "NewMaterialAdded") return;
-      if (!filterAlertsForRole([alert], session.role).length) return;
+      if (!filterAlertsForRole([alert], session.role, session.userId, session.shopId).length) return;
       setActiveAlertCount((c) => c + 1);
       setAlertsRefreshToken((t) => t + 1);
       addToast(
@@ -356,7 +358,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight flex items-center gap-2">
-                Ethiopian Airlines <span className="text-[#e2b007] font-semibold text-xs py-0.5 px-2 bg-black/25 rounded-full">Stock HQ</span>
+                Airline Store Management System
               </h1>
               <p className="text-[10px] text-emerald-100 hidden sm:block">Aviation Maintenance & Materials Control Tower</p>
             </div>
@@ -454,7 +456,7 @@ export default function App() {
               canManageCatalog={permissions.canManageCatalog}
               canReceiveStock={permissions.canReceiveStock}
               shopScopeLabel={
-                normalizeRole(session.role) === "ShopManager"
+                session.role === "ShopManager"
                   ? shops.find((s) => s.id === session.shopId)?.name ?? "Your shop"
                   : inventoryShopId != null
                   ? shops.find((s) => s.id === inventoryShopId)?.name
@@ -466,9 +468,7 @@ export default function App() {
             />
           )}
 
-          {currentView.type === "stock-by-shop" && permissions?.canViewStockByShop && (
-            <StockByShopView session={session} readOnly={normalizeRole(session.role) === "Procurement"} executeApiCall={executeApiCall} />
-          )}
+
 
           {currentView.type === "material-new" && permissions?.canManageCatalog && (
             <MaterialFormView
@@ -536,18 +536,23 @@ export default function App() {
             <TeamManagementView session={session} addToast={addToast} executeApiCall={executeApiCall} />
           )}
 
+          {currentView.type === "manager-overview" && permissions?.canViewManagerOverview && (
+            <ManagerOverviewView session={session} onNavigate={navigate} executeApiCall={executeApiCall} />
+          )}
+
           {currentView.type === "alerts" && (
             <AlertsView
               executeApiCall={executeApiCall}
               role={session.role}
               userId={session.userId}
+              shopId={session.shopId}
               refreshToken={alertsRefreshToken}
               onCountChange={setActiveAlertCount}
             />
           )}
 
-          {currentView.type === "procurement" && (
-            <ProcurementView executeApiCall={executeApiCall} />
+          {currentView.type === "procurement-inbox" && (
+            <ProcurementInboxView executeApiCall={executeApiCall} />
           )}
 
           {currentView.type === "categories" && (
@@ -560,6 +565,24 @@ export default function App() {
               setConfirmDialog={setConfirmDialog}
             />
           )}
+
+          {currentView.type === "user-admin" && permissions?.canManageUsers && (
+            <UserAdminView
+              session={session}
+              onNavigate={navigate}
+              executeApiCall={executeApiCall}
+            />
+          )}
+
+          {currentView.type === "budget-admin" && permissions?.canViewAdminBudget && (
+            <AdminBudgetView
+              session={session}
+              onNavigate={navigate}
+              executeApiCall={executeApiCall}
+            />
+          )}
+
+
           </>
           )}
 
@@ -569,7 +592,7 @@ export default function App() {
       {/* Footer System Details */}
       <footer className="bg-slate-900 text-slate-400 py-4 mt-auto border-t border-slate-800 text-xs font-mono">
         <div className="max-w-7xl mx-auto px-4 text-center sm:flex sm:justify-between sm:items-center">
-          <p>ET-SM © 2026 Flight Operations Stock Ledger</p>
+          <p>Airline Store Management System © 2026 Flight Operations Stock Ledger</p>
           <div className="flex items-center justify-center gap-4 mt-2 sm:mt-0">
             <span>Terminal: ADDIS_BOLE_HQ</span>
             <span>Refreshes: 12,000ms</span>
@@ -634,9 +657,10 @@ interface DashboardViewProps {
 function DashboardView({ stats, loading, onNavigate, onRefresh, permissions, role }: DashboardViewProps) {
   const [logs, setLogs] = useState<any[]>([]);
   const [logsLoading, setLogsLoading] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<"people" | "catalog" | "stores" | "reports">("reports");
 
   useEffect(() => {
-    if (role === "Admin") {
+    if (role === "Admin" && activeTab === "reports") {
       setLogsLoading(true);
       api.getAuditLogs(1, 20)
         .then((res) => {
@@ -645,14 +669,21 @@ function DashboardView({ stats, loading, onNavigate, onRefresh, permissions, rol
         })
         .catch(() => setLogsLoading(false));
     }
-  }, [role, stats]);
+  }, [role, stats, activeTab]);
+
+  const isAdmin = role === "Admin";
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-slate-200 pb-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Operational Dashboard</h2>
-          <p className="text-sm text-slate-500">Overview of fleet material volumes, values and constraints</p>
+          <h2 className="text-2xl font-bold text-slate-800">
+            {isAdmin ? "Airline Store Management System Console" : "Operational Dashboard"}
+          </h2>
+          <p className="text-sm text-slate-500">
+            {isAdmin ? "Unified flight logistics control, safety tracking, and inventory oversight" : "Overview of fleet material volumes, values and constraints"}
+          </p>
         </div>
         <button
           onClick={onRefresh}
@@ -743,185 +774,319 @@ function DashboardView({ stats, loading, onNavigate, onRefresh, permissions, rol
 
       </div>
 
-      {/* Quick Launch & Guidelines Bento Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Quick Launchpad list */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
-          <h3 className="text-base font-bold text-slate-900">Control Actions</h3>
-          <p className="text-xs text-slate-500">Fast access to active catalog logging and receive sequences</p>
-          
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {permissions.canManageCatalog && (
-              <button
-                id="dash-cta-new-material"
-                onClick={() => onNavigate({ type: "material-new" })}
-                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left focus:outline-none focus:ring-1 focus:ring-[#006039]"
-              >
-                <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
-                  <Plus className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-sm text-slate-900">Add New Material</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">Register critical aviation spare parts, lubricants or safety components.</p>
-                </div>
-              </button>
-            )}
+      {/* Admin Tab Controller */}
+      {isAdmin && (
+        <div className="flex border-b border-slate-200 gap-1 bg-slate-100/80 p-1 rounded-xl">
+          <button
+            onClick={() => setActiveTab("reports")}
+            className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+              activeTab === "reports"
+                ? "bg-white text-[#006039] shadow-xs border border-slate-200/50"
+                : "text-slate-600 hover:text-slate-900 hover:bg-white/40"
+            }`}
+          >
+            <History className="w-3.5 h-3.5" /> Reports & Alerts
+          </button>
+          <button
+            onClick={() => setActiveTab("people")}
+            className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+              activeTab === "people"
+                ? "bg-white text-[#006039] shadow-xs border border-slate-200/50"
+                : "text-slate-600 hover:text-slate-900 hover:bg-white/40"
+            }`}
+          >
+            <LayoutDashboard className="w-3.5 h-3.5" /> People & Roles
+          </button>
+          <button
+            onClick={() => setActiveTab("catalog")}
+            className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+              activeTab === "catalog"
+                ? "bg-white text-[#006039] shadow-xs border border-slate-200/50"
+                : "text-slate-600 hover:text-slate-900 hover:bg-white/40"
+            }`}
+          >
+            <Boxes className="w-3.5 h-3.5" /> Catalog & Spares
+          </button>
+          <button
+            onClick={() => setActiveTab("stores")}
+            className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+              activeTab === "stores"
+                ? "bg-white text-[#006039] shadow-xs border border-slate-200/50"
+                : "text-slate-600 hover:text-slate-900 hover:bg-white/40"
+            }`}
+          >
+            <Warehouse className="w-3.5 h-3.5" /> Stores & Stock
+          </button>
+        </div>
+      )}
 
-            {permissions.canViewRequests && (
-              <button
-                onClick={() => onNavigate({ type: "material-requests" })}
-                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left"
-              >
-                <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
-                  <ClipboardList className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-sm text-slate-900">Request queue</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">Approve, pick, and release stock to shops.</p>
-                </div>
-              </button>
-            )}
+      {/* Content tabs */}
+      {(!isAdmin || activeTab === "reports") && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Quick Launchpad list */}
+            <div className="lg:col-span-2 bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
+              <h3 className="text-base font-bold text-slate-900">Control Actions</h3>
+              <p className="text-xs text-slate-500">Fast access to active catalog logging and receive sequences</p>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {permissions.canManageCatalog && (
+                  <button
+                    id="dash-cta-new-material"
+                    onClick={() => onNavigate({ type: "material-new" })}
+                    className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left focus:outline-none focus:ring-1 focus:ring-[#006039]"
+                  >
+                    <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
+                      <Plus className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-sm text-slate-900">Add New Material</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">Register critical aviation spare parts, lubricants or safety components.</p>
+                    </div>
+                  </button>
+                )}
 
-            {permissions.canManageCategories && (
-              <button
-                id="dash-cta-categories"
-                onClick={() => onNavigate({ type: "categories" })}
-                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-amber-600 hover:bg-amber-50/20 rounded-xl transition-all text-left focus:outline-none focus:ring-1 focus:ring-amber-500"
-              >
-                <div className="bg-amber-100 text-[#e2b007] p-2.5 rounded-lg">
-                  <Layers className="w-5 h-5 text-amber-700" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-sm text-slate-900">Configure Divisions</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">Define material groups, safety rules, and warehouse layouts.</p>
-                </div>
-              </button>
-            )}
+                {permissions.canViewRequests && (
+                  <button
+                    onClick={() => onNavigate({ type: "material-requests" })}
+                    className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left"
+                  >
+                    <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
+                      <ClipboardList className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-sm text-slate-900">Request queue</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">Approve, pick, and release stock to shops.</p>
+                    </div>
+                  </button>
+                )}
 
-            {permissions.canSearchAndRequest && (
-              <button
-                onClick={() => onNavigate({ type: "material-search" })}
-                className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left"
-              >
-                <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
-                  <Search className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-sm text-slate-900">Search & request</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">Technician counter — find parts and submit requests.</p>
-                </div>
-              </button>
-            )}
-          </div>
+                {permissions.canManageCategories && (
+                  <button
+                    id="dash-cta-categories"
+                    onClick={() => onNavigate({ type: "categories" })}
+                    className="flex items-start gap-3 p-4 border border-slate-200 hover:border-amber-600 hover:bg-amber-50/20 rounded-xl transition-all text-left focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  >
+                    <div className="bg-amber-100 text-[#e2b007] p-2.5 rounded-lg">
+                      <Layers className="w-5 h-5 text-amber-700" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-sm text-slate-900">Configure Divisions</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">Define material groups, safety rules, and warehouse layouts.</p>
+                    </div>
+                  </button>
+                )}
 
-          <div className="border-t border-slate-100 pt-4 mt-2">
-            <h4 className="text-sm font-semibold text-slate-800 mb-2">Fleet Operational Flow Guides:</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-slate-500">
-              <div className="p-2 bg-slate-50 rounded-lg flex items-center gap-1.5">
-                <span className="font-bold text-[#006039]">No. 1</span> Establish Category
+                {permissions.canSearchAndRequest && (
+                  <button
+                    onClick={() => onNavigate({ type: "material-search" })}
+                    className="flex items-start gap-3 p-4 border border-slate-200 hover:border-[#006039] rounded-xl hover:bg-[#006039]/5 transition-all text-left"
+                  >
+                    <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg">
+                      <Search className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-sm text-slate-900">Search & request</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">Technician counter — find parts and submit requests.</p>
+                    </div>
+                  </button>
+                )}
               </div>
-              <div className="p-2 bg-slate-50 rounded-lg flex items-center gap-1.5">
-                <span className="font-bold text-[#e2b007]">No. 2</span> Define Material Line
-              </div>
-              <div className="p-2 bg-slate-50 rounded-lg flex items-center gap-1.5">
-                <span className="font-bold text-slate-700">No. 3</span> Receive Batch Stock
+
+              <div className="border-t border-slate-100 pt-4 mt-2">
+                <h4 className="text-sm font-semibold text-slate-800 mb-2">Fleet Operational Flow Guides:</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-slate-500">
+                  <div className="p-2 bg-slate-50 rounded-lg flex items-center gap-1.5">
+                    <span className="font-bold text-[#006039]">No. 1</span> Establish Category
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded-lg flex items-center gap-1.5">
+                    <span className="font-bold text-[#e2b007]">No. 2</span> Define Material Line
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded-lg flex items-center gap-1.5">
+                    <span className="font-bold text-slate-700">No. 3</span> Receive Batch Stock
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* Ethiopian Airlines Info Banner */}
-        <div className="bg-[#006039] text-white rounded-xl p-6 flex flex-col justify-between relative overflow-hidden border-2 border-[#e2b007]">
-          <div className="absolute -bottom-10 -right-10 w-44 h-44 bg-emerald-800/20 rounded-full" />
-          <div className="space-y-4">
-            <span className="text-[10px] font-bold tracking-wider text-[#e2b007] bg-black/30 px-2.5 py-1 rounded-full uppercase">
-              Bole Terminal Guard
-            </span>
-            <h4 className="text-lg font-bold">Standard Safety Notice</h4>
-            <p className="text-xs text-emerald-100 leading-relaxed">
-              All aviation materials must match matching physical batches with accurate shelf life tracking. Do not delete batches without checking flight logs.
-            </p>
-          </div>
-          <div className="mt-8 pt-4 border-t border-emerald-800 flex items-center justify-between">
-            <span className="text-xs font-mono text-[#e2b007]">Ref: HQ-ET-QA-STD</span>
-            {permissions.canViewMaterials && (
-              <button
-                onClick={() => onNavigate({ type: "materials" })}
-                className="text-[#e2b007] hover:text-[#e2b007]/80 text-xs font-semibold flex items-center gap-1 focus:outline-none"
-              >
-                Verify Spares <ChevronRight className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-      </div>
-
-      {/* System-wide Audit Ledger (Admin Only) */}
-      {role === "Admin" && (
-        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <History className="w-5 h-5 text-[#006039]" />
-              System-wide Operational & Audit Ledger
-            </h3>
-            <span className="text-xs text-slate-400 font-mono">Real-time stock flow & user transaction tracking</span>
-          </div>
-
-          {logsLoading && logs.length === 0 ? (
-            <div className="p-12 text-center">
-              <Loader2 className="w-8 h-8 animate-spin text-[#006039] mx-auto mb-4" />
-              <p className="text-xs text-slate-500 font-mono">Retrieving secure transaction files...</p>
+            {/* Ethiopian Airlines Info Banner */}
+            <div className="bg-[#006039] text-white rounded-xl p-6 flex flex-col justify-between relative overflow-hidden border-2 border-[#e2b007]">
+              <div className="absolute -bottom-10 -right-10 w-44 h-44 bg-emerald-800/20 rounded-full" />
+              <div className="space-y-4">
+                <span className="text-[10px] font-bold tracking-wider text-[#e2b007] bg-black/30 px-2.5 py-1 rounded-full uppercase">
+                  Bole Terminal Guard
+                </span>
+                <h4 className="text-lg font-bold">Standard Safety Notice</h4>
+                <p className="text-xs text-emerald-100 leading-relaxed">
+                  All aviation materials must match matching physical batches with accurate shelf life tracking. Do not delete batches without checking flight logs.
+                </p>
+              </div>
+              <div className="mt-8 pt-4 border-t border-emerald-800 flex items-center justify-between">
+                <span className="text-xs font-mono text-[#e2b007]">Ref: HQ-ET-QA-STD</span>
+                {permissions.canViewMaterials && (
+                  <button
+                    onClick={() => onNavigate({ type: "materials" })}
+                    className="text-[#e2b007] hover:text-[#e2b007]/80 text-xs font-semibold flex items-center gap-1 focus:outline-none"
+                  >
+                    Verify Spares <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
-          ) : logs.length === 0 ? (
-            <p className="p-6 text-center text-slate-400 text-xs font-mono">No transaction records logged.</p>
-          ) : (
-            <div className="overflow-x-auto rounded-lg border border-slate-100">
-              <table className="min-w-full divide-y divide-slate-100">
-                <thead className="bg-slate-50 font-mono">
-                  <tr>
-                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">Timestamp</th>
-                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">Action</th>
-                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Resource</th>
-                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Performed By</th>
-                    <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 bg-white">
-                  {logs.map((log) => (
-                    <tr key={log.logId} className="hover:bg-slate-50 text-xs">
-                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap font-mono">
-                        {new Date(log.timestamp).toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 font-mono">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                          log.action === "Receive" || log.action === "Create"
-                            ? "bg-emerald-100 text-emerald-800"
-                            : log.action === "IssueRequest"
-                            ? "bg-teal-100 text-teal-800"
-                            : log.action === "Delete" || log.action === "CancelRequest"
-                            ? "bg-rose-100 text-rose-800"
-                            : "bg-slate-100 text-slate-700"
-                        }`}>
-                          {log.action}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 font-mono text-slate-600">
-                        {log.entity} (#{log.entityId})
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-slate-800 font-sans">
-                        {log.performedByName}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600 leading-relaxed font-sans">
-                        {log.details}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+
+          </div>
+
+          {/* System-wide Audit Ledger (Admin Only) */}
+          {role === "Admin" && (
+            <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <History className="w-5 h-5 text-[#006039]" />
+                  System-wide Operational & Audit Ledger
+                </h3>
+                <span className="text-xs text-slate-400 font-mono">Real-time stock flow & user transaction tracking</span>
+              </div>
+
+              {logsLoading && logs.length === 0 ? (
+                <div className="p-12 text-center">
+                  <Loader2 className="w-8 h-8 animate-spin text-[#006039] mx-auto mb-4" />
+                  <p className="text-xs text-slate-500 font-mono">Retrieving secure transaction files...</p>
+                </div>
+              ) : logs.length === 0 ? (
+                <p className="p-6 text-center text-slate-400 text-xs font-mono">No transaction records logged.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-100">
+                  <table className="min-w-full divide-y divide-slate-100">
+                    <thead className="bg-slate-50 font-mono">
+                      <tr>
+                        <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">Timestamp</th>
+                        <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">Action</th>
+                        <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Resource</th>
+                        <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Performed By</th>
+                        <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 font-sans">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {logs.map((log) => (
+                        <tr key={log.logId} className="hover:bg-slate-50 text-xs">
+                          <td className="px-4 py-3 text-slate-500 whitespace-nowrap font-mono">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-3 font-mono">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              log.action === "Receive" || log.action === "Create"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : log.action === "IssueRequest"
+                                ? "bg-teal-100 text-teal-800"
+                                : log.action === "Delete" || log.action === "CancelRequest"
+                                ? "bg-rose-100 text-rose-800"
+                                : "bg-slate-100 text-slate-700"
+                            }`}>
+                              {log.action}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-slate-600">
+                            {log.entity} (#{log.entityId})
+                          </td>
+                          <td className="px-4 py-3 font-semibold text-slate-800 font-sans">
+                            {log.performedByName}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600 leading-relaxed font-sans">
+                            {log.details}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
+        </div>
+      )}
+
+      {isAdmin && activeTab === "people" && (
+        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">User Account Administration</h3>
+              <p className="text-xs text-slate-500">Configure team roles, register staff members, and modify operational limits.</p>
+            </div>
+            <button
+              onClick={() => onNavigate({ type: "team" })}
+              className="px-3.5 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white text-xs font-semibold rounded-lg flex items-center gap-1 cursor-pointer"
+            >
+              Open Team Control Panel <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="border border-slate-100 rounded-lg p-4 bg-slate-50 space-y-2">
+            <h4 className="text-xs font-bold text-[#006039] uppercase tracking-wider">Access Guidelines</h4>
+            <ul className="text-xs text-slate-600 space-y-1.5 list-disc pl-4 leading-relaxed">
+              <li>Managers can register technician/employee accounts directly under their respective shops.</li>
+              <li>Employees/Technicians are constrained by monthly limits: <span className="font-semibold">Max Requests per Month</span> and <span className="font-semibold">Max Quantity per Month</span>.</li>
+              <li>Only system administrators can seed managers or procurement roles.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && activeTab === "catalog" && (
+        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Aviation Material Catalog</h3>
+              <p className="text-xs text-slate-500">Maintain the master inventory specifications list of all airline consumable and repair parts.</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => onNavigate({ type: "materials" })}
+                className="px-3.5 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                Browse Materials
+              </button>
+              <button
+                onClick={() => onNavigate({ type: "categories" })}
+                className="px-3.5 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                Configure Categories
+              </button>
+            </div>
+          </div>
+          <div className="border border-slate-100 rounded-lg p-4 bg-slate-50 space-y-2">
+            <h4 className="text-xs font-bold text-[#e2b007] uppercase tracking-wider">Master Catalog Integrity Rules</h4>
+            <ul className="text-xs text-slate-600 space-y-1.5 list-disc pl-4 leading-relaxed">
+              <li>Each material must have a unique Part Number conforming to AMOS/Ethiopian Airlines standards.</li>
+              <li>Verify that minimum thresholds (<span className="font-mono text-emerald-800">minStock</span>) are set to trigger automated replenishment tasks.</li>
+              <li>Aircraft types compatibility must list models separated by commas (e.g. <span className="font-mono bg-white px-1.5 py-0.5 rounded border text-[10px]">B737,B787</span>).</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && activeTab === "stores" && (
+        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Workshops & Stock Controls</h3>
+              <p className="text-xs text-slate-500">Track on-hand balances across maintenance locations, receive deliveries, and evaluate batch serviceability.</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => onNavigate({ type: "stock-by-shop" })}
+                className="px-3.5 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                View Stock by Shop
+              </button>
+            </div>
+          </div>
+          <div className="border border-slate-100 rounded-lg p-4 bg-slate-50 space-y-2">
+            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Stock Handlers Instructions</h4>
+            <ul className="text-xs text-slate-600 space-y-1.5 list-disc pl-4 leading-relaxed">
+              <li>Receipts create unique batch records to track expiry dates and costs individually.</li>
+              <li>Stocks with expired batches will trigger low-stock alerts if the remaining serviceable count falls below the minStock limit.</li>
+            </ul>
+          </div>
         </div>
       )}
     </div>

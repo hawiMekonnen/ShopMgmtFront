@@ -51,9 +51,13 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401) {
     sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("authLoginId");
+    sessionStorage.removeItem("authName");
     sessionStorage.removeItem("authRole");
     sessionStorage.removeItem("authEmail");
+    sessionStorage.removeItem("authUserId");
     sessionStorage.removeItem("authShopId");
+    sessionStorage.removeItem("authMustChangePassword");
     onUnauthorized?.();
   }
   if (!response.ok) {
@@ -166,33 +170,54 @@ function adaptRequest(raw: any): MaterialRequest {
     status: normalizeRequestStatus(raw.status),
     notes: raw.notes,
     createdAt: raw.createdAt,
+    managerApprovedAt: raw.managerApprovedAt,
+    managerApprovedByUserId: raw.managerApprovedByUserId,
+    scheduledPickupTime: raw.scheduledPickupTime,
   };
 }
 
 export const api = {
-  login: async (email: string, password: string): Promise<AuthSession> => {
+  login: async (loginId: string, password: string): Promise<AuthSession> => {
     const res = await request<any>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ loginId, password }),
     });
     const session: AuthSession = {
       token: res.token,
-      email: res.email,
+      loginId: res.loginId ?? loginId,
+      name: res.name ?? "",
+      email: res.email ?? "",
       role: res.role,
+      userId: res.userId,
       shopId: res.shopId,
+      mustChangePassword: res.mustChangePassword ?? false,
     };
     sessionStorage.setItem("authToken", session.token);
+    sessionStorage.setItem("authLoginId", session.loginId);
+    sessionStorage.setItem("authName", session.name);
     sessionStorage.setItem("authRole", session.role);
     sessionStorage.setItem("authEmail", session.email);
+    if (session.userId) sessionStorage.setItem("authUserId", String(session.userId));
     if (session.shopId) sessionStorage.setItem("authShopId", String(session.shopId));
+    sessionStorage.setItem("authMustChangePassword", session.mustChangePassword ? "1" : "0");
     return session;
   },
 
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }),
+
   logout: () => {
     sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("authLoginId");
+    sessionStorage.removeItem("authName");
     sessionStorage.removeItem("authRole");
     sessionStorage.removeItem("authEmail");
+    sessionStorage.removeItem("authUserId");
     sessionStorage.removeItem("authShopId");
+    sessionStorage.removeItem("authMustChangePassword");
   },
 
   getSession: (): AuthSession | null => {
@@ -200,11 +225,17 @@ export const api = {
     if (!token) return null;
     return {
       token,
+      loginId: sessionStorage.getItem("authLoginId") ?? "",
+      name: sessionStorage.getItem("authName") ?? "",
       email: sessionStorage.getItem("authEmail") ?? "",
       role: sessionStorage.getItem("authRole") ?? "",
+      userId: sessionStorage.getItem("authUserId")
+        ? parseInt(sessionStorage.getItem("authUserId")!, 10)
+        : undefined,
       shopId: sessionStorage.getItem("authShopId")
         ? parseInt(sessionStorage.getItem("authShopId")!, 10)
         : undefined,
+      mustChangePassword: sessionStorage.getItem("authMustChangePassword") === "1",
     };
   },
 
@@ -298,13 +329,25 @@ export const api = {
 
   getDashboardStats: () => request<DashboardStats>("/api/dashboard"),
 
-  getMaterialRequests: (shopId?: number, status?: string) => {
+  getMaterialRequests: (shopId?: number, status?: string, departmentId?: number, userId?: number) => {
     const search = new URLSearchParams();
     if (shopId) search.set("shopId", String(shopId));
     if (status) search.set("status", status);
+    if (departmentId) search.set("departmentId", String(departmentId));
+    if (userId) search.set("userId", String(userId));
     const q = search.toString() ? `?${search}` : "";
     return request<any[]>(`/api/materialrequests${q}`).then((items) => items.map(adaptRequest));
   },
+
+  getDepartments: () => request<any[]>("/api/departments"),
+
+  getDepartmentInboxSummary: () => request<any[]>("/api/departments/inbox-summary"),
+
+  updateMyDepartment: (departmentId: number) =>
+    request<void>("/api/users/me/department", {
+      method: "PATCH",
+      body: JSON.stringify({ departmentId }),
+    }),
 
   submitMaterialRequest: (data: {
     materialId: number;
@@ -320,6 +363,15 @@ export const api = {
 
   rejectRequest: (id: number, notes?: string) =>
     request<any>(`/api/materialrequests/${id}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ notes }),
+    }).then(adaptRequest),
+
+  managerApproveRequest: (id: number) =>
+    request<any>(`/api/materialrequests/${id}/manager-approve`, { method: "PATCH" }).then(adaptRequest),
+
+  managerRejectRequest: (id: number, notes?: string) =>
+    request<any>(`/api/materialrequests/${id}/manager-reject`, {
       method: "PATCH",
       body: JSON.stringify({ notes }),
     }).then(adaptRequest),
@@ -348,6 +400,8 @@ export const api = {
           threshold: raw.threshold,
           triggeredAt: raw.triggeredAt,
           requestId: raw.requestId,
+          createdBy: raw.createdBy,
+          requestShopId: raw.requestShopId,
           note: raw.note,
           createdAt: raw.createdAt,
         })
@@ -380,10 +434,10 @@ export const api = {
       body: JSON.stringify({ reorderNote }),
     }),
 
-  markRequestReady: (requestId: number, notes?: string) =>
+  markRequestReady: (requestId: number, notes?: string, scheduledPickupTime?: string) =>
     request<MaterialRequest>(`/api/procurement/requests/${requestId}/ready`, {
       method: "PATCH",
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify({ notes, scheduledPickupTime }),
     }),
 
   getProcurementBudgetReport: (shopId?: number) => {
@@ -391,20 +445,35 @@ export const api = {
     return request<any>(`/api/procurement/budget-report${q}`);
   },
 
-  getTechnicians: (shopId?: number) => {
+  getEmployees: (shopId?: number) => {
     const q = shopId ? `?shopId=${shopId}` : "";
-    return request<any[]>(`/api/users/technicians${q}`);
+    return request<any[]>(`/api/users/employees${q}`);
   },
 
-  createTechnician: (data: { name: string; email: string; password: string }) =>
-    request<any>("/api/users/technicians", { method: "POST", body: JSON.stringify(data) }),
+  createEmployee: (data: {
+    name: string;
+    loginId?: string;
+    password: string;
+    maxRequestsPerMonth?: number;
+    maxQuantityPerMonth?: number;
+  }) => request<any>("/api/users/employees", { method: "POST", body: JSON.stringify(data) }),
 
-  createTechnicianForShop: (shopId: number, data: { name: string; email: string; password: string }) =>
-    request<any>(`/api/users/technicians?shopId=${shopId}`, { method: "POST", body: JSON.stringify(data) }),
+  createEmployeeForShop: (
+    shopId: number,
+    data: {
+      name: string;
+      loginId?: string;
+      password: string;
+      maxRequestsPerMonth?: number;
+      maxQuantityPerMonth?: number;
+    }
+  ) => request<any>(`/api/users/employees?shopId=${shopId}`, { method: "POST", body: JSON.stringify(data) }),
 
-  getShopManagers: () => request<any[]>("/api/users/managers"),
+  getManagers: () => request<any[]>("/api/users/managers"),
 
-  createShopManager: (data: { name: string; email: string; password: string; shopId: number }) =>
+  getMe: () => request<any>("/api/users/me"),
+
+  createManager: (data: { name: string; loginId?: string; password: string; shopId: number }) =>
     request<any>("/api/users/managers", { method: "POST", body: JSON.stringify(data) }),
 
   getShopActivity: (shopId?: number) => {
@@ -416,4 +485,12 @@ export const api = {
     request<{ items: any[]; totalCount: number; page: number; pageSize: number; totalPages: number }>(
       `/api/auditlogs?page=${page}&pageSize=${pageSize}`
     ),
+
+  getAllUsers: () => request<any[]>("/api/users"),
+
+  resetUserPassword: (userId: number, newPassword: string) =>
+    request<void>(`/api/users/${userId}/reset-password`, {
+      method: "POST",
+      body: JSON.stringify({ newPassword }),
+    }),
 };

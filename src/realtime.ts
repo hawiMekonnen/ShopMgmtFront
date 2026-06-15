@@ -24,6 +24,8 @@ function adaptAlert(raw: Record<string, unknown>): Alert {
     threshold: (raw.threshold as number) ?? 0,
     triggeredAt: (raw.triggeredAt as string) ?? "",
     requestId: raw.requestId as number | undefined,
+    createdBy: raw.createdBy as number | undefined,
+    requestShopId: raw.requestShopId as number | undefined,
     note: (raw.note as string) ?? undefined,
     createdAt: (raw.createdAt as string) ?? undefined,
   };
@@ -63,12 +65,25 @@ export async function stopRealtimeHub(): Promise<void> {
 }
 
 /** Alert types relevant per role for badge counts and technician inbox. */
-export function filterAlertsForRole(alerts: Alert[], role: string): Alert[] {
+export function filterAlertsForRole(alerts: Alert[], role: string, userId?: number, shopId?: number): Alert[] {
   const normalized = role.trim();
-  if (normalized === "Technician") {
-    return alerts.filter((a) => a.type === "PickupReady" || a.type === "NewMaterialAdded");
-  }
-  return alerts;
+  return alerts.filter((a) => {
+    if (a.type === "PickupReady") {
+      if (normalized === "Admin" || normalized === "Procurement") {
+        return false;
+      }
+      if (normalized === "Employee" || normalized === "Technician") {
+        return a.createdBy === userId;
+      }
+      if (normalized === "Manager" || normalized === "ShopManager") {
+        return a.createdBy === userId || (shopId !== undefined && a.requestShopId === shopId);
+      }
+    }
+    if (normalized === "Technician" && a.type === "NewMaterialAdded") {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function alertTypeLabel(type: string): string {

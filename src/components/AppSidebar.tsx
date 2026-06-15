@@ -10,20 +10,25 @@ import {
   Warehouse,
   Users,
   Info,
+  LayoutGrid,
+  DollarSign,
 } from "lucide-react";
 import { AuthSession, ViewState } from "../types";
 import { getNavItemsForRole, getRoleSubtitle, NavItem } from "../roleConfig";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   dashboard: LayoutDashboard,
+  "manager-overview": LayoutGrid,
   "material-search": Search,
+  "material-search-mgr": Search,
   "material-requests": ClipboardList,
   materials: Boxes,
   alerts: Bell,
-  procurement: Package,
-  "stock-by-shop": Warehouse,
+  "procurement-inbox": Package,
   categories: Layers,
   team: Users,
+  "user-admin": Users,
+  "budget-admin": DollarSign,
 };
 
 function isNavActive(item: NavItem, currentView: ViewState): boolean {
@@ -37,9 +42,10 @@ interface AppSidebarProps {
   onNavigate: (view: ViewState) => void;
   lastUpdated?: string;
   alertBadgeCount?: number;
+  pendingApprovalCount?: number;
 }
 
-export default function AppSidebar({ session, currentView, onNavigate, lastUpdated, alertBadgeCount = 0 }: AppSidebarProps) {
+export default function AppSidebar({ session, currentView, onNavigate, lastUpdated, alertBadgeCount = 0, pendingApprovalCount = 0 }: AppSidebarProps) {
   const items = getNavItemsForRole(session.role);
 
   return (
@@ -70,6 +76,11 @@ export default function AppSidebar({ session, currentView, onNavigate, lastUpdat
               {item.id === "alerts" && alertBadgeCount > 0 && (
                 <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full bg-[#e2b007] text-[#006039] text-[10px] font-bold">
                   {alertBadgeCount > 99 ? "99+" : alertBadgeCount}
+                </span>
+              )}
+              {item.badgeKey === "pendingApprovals" && pendingApprovalCount > 0 && (
+                <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
+                  {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
                 </span>
               )}
             </button>
