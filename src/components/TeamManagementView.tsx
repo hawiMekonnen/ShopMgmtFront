@@ -1,8 +1,17 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Users, RefreshCw, UserPlus, ClipboardList, Shield, Bell, X, Check, Ban } from "lucide-react";
+import { Users, UserPlus, ClipboardList, Shield, Bell, X, Check, Ban, Building2, ChevronRight, History } from "lucide-react";
 import { api } from "../client";
 import { AuthSession, MaterialRequest } from "../types";
 import { requestStatusLabel, normalizeRequestStatus } from "../requestStatus";
+import {
+  PremiumPageHeader,
+  PremiumPanel,
+  PremiumEmptyState,
+  PremiumFormCard,
+  premiumInput,
+  premiumSelect,
+  premiumBtnPrimary,
+} from "./PremiumUI";
 
 type ToastFn = (type: "success" | "error" | "warning" | "info", title: string, message?: string) => void;
 
@@ -31,7 +40,9 @@ export default function TeamManagementView({
   const isManager = session.role === "Manager";
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [requests, setRequests] = useState<MaterialRequest[]>([]);
-  const [managers, setManagers] = useState<Employee[]>([]);
+  const [managers, setManagers] = useState<{ userId: number; loginId?: string; name: string; email: string }[]>([]);
+  const [rejectingRequestId, setRejectingRequestId] = useState<number | null>(null);
+  const [rejectionNotes, setRejectionNotes] = useState<string>("");
   const [shops, setShops] = useState<{ id: number; name: string }[]>([]);
   const [selectedShopId, setSelectedShopId] = useState<number | "">(session.shopId ?? "");
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
@@ -126,9 +137,9 @@ export default function TeamManagementView({
     if (ok) load();
   };
 
-  const rejectRequest = async (requestId: number) => {
+  const rejectRequest = async (requestId: number, notes?: string) => {
     const ok = await executeApiCall(
-      () => api.managerRejectRequest(requestId, "Rejected by manager"),
+      () => api.managerRejectRequest(requestId, notes || "Rejected by manager"),
       "Request rejected"
     );
     if (ok) load();
@@ -192,32 +203,35 @@ export default function TeamManagementView({
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <Users className="w-6 h-6" />
-            {isManager ? "Team & user management" : "Shop team & activity"}
-          </h2>
-          {isManager && totalPending > 0 && (
-            <p className="text-sm text-amber-700 flex items-center gap-1.5 mt-1">
-              <Bell className="w-4 h-4" />
-              {totalPending} employee request{totalPending !== 1 ? "s" : ""} waiting for your approval
-            </p>
-          )}
-        </div>
-        <button type="button" onClick={load} className="p-2 border rounded-lg hover:bg-slate-50 cursor-pointer">
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
+    <div className="space-y-6 page-enter">
+      <PremiumPageHeader
+        icon={Users}
+        title={isManager ? "Team & user management" : "Shop team & activity"}
+        subtitle={
+          isManager
+            ? totalPending > 0
+              ? `${totalPending} employee request${totalPending !== 1 ? "s" : ""} waiting for your approval`
+              : "Manage employees, review requests, and set department assignments."
+            : "Create accounts and monitor shop activity across your team."
+        }
+        onRefresh={load}
+        loading={loading}
+        badge={
+          isManager && totalPending > 0 ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#e2b007]/20 border border-[#e2b007]/40 text-[#e2b007] text-xs font-bold">
+              <Bell className="w-3.5 h-3.5" /> {totalPending} pending
+            </span>
+          ) : undefined
+        }
+      />
 
       {isAdmin && shops.length > 0 && (
-        <div className="flex items-center gap-2">
-          <label className="text-xs font-semibold text-slate-600">Shop</label>
+        <div className="flex items-center gap-3 premium-surface px-4 py-3">
+          <label className="text-xs font-bold text-slate-500 uppercase tracking-wide shrink-0">Shop</label>
           <select
             value={selectedShopId}
             onChange={(e) => setSelectedShopId(e.target.value ? Number(e.target.value) : "")}
-            className="border rounded-lg px-3 py-2 text-sm"
+            className={`${premiumSelect} flex-1 max-w-xs`}
           >
             {shops.map((s) => (
               <option key={s.id} value={s.id}>{s.name}</option>
@@ -227,45 +241,38 @@ export default function TeamManagementView({
       )}
 
       {isAdmin && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-          <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
-            <Shield className="w-4 h-4 text-[#006039]" /> New manager account
-          </h3>
+        <PremiumFormCard title="New manager account" icon={Shield}>
           <div className="flex flex-wrap gap-2">
-            <input placeholder="Manager full name" value={managerName} onChange={(e) => setManagerName(e.target.value)} className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]" />
-            <input placeholder="Manager ID (optional)" value={managerLoginId} onChange={(e) => setManagerLoginId(e.target.value.toUpperCase())} className="border rounded-lg px-3 py-2 text-sm w-44 font-mono uppercase" />
-            <input placeholder="Password" type="password" value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} className="border rounded-lg px-3 py-2 text-sm w-40" />
-            <button type="button" onClick={createManager} className="px-4 py-2 bg-[#006039] text-white text-sm font-semibold rounded-lg cursor-pointer">Create manager</button>
+            <input placeholder="Manager full name" value={managerName} onChange={(e) => setManagerName(e.target.value)} className={`${premiumInput} flex-1 min-w-[140px]`} />
+            <input placeholder="Manager ID (optional)" value={managerLoginId} onChange={(e) => setManagerLoginId(e.target.value.toUpperCase())} className={`${premiumInput} w-44 font-mono uppercase`} />
+            <input placeholder="Password" type="password" value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} className={`${premiumInput} w-40`} />
+            <button type="button" onClick={createManager} className={premiumBtnPrimary}>Create manager</button>
           </div>
-        </div>
+        </PremiumFormCard>
       )}
 
       {(isManager || isAdmin) && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-          <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
-            <UserPlus className="w-4 h-4 text-[#006039]" /> New employee account
-          </h3>
+        <PremiumFormCard title="New employee account" icon={UserPlus}>
           <div className="flex flex-wrap gap-2">
-            <input placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]" />
-            <input placeholder="Employee ID (optional)" value={loginId} onChange={(e) => setLoginId(e.target.value.toUpperCase())} className="border rounded-lg px-3 py-2 text-sm w-44 font-mono uppercase" />
-            <input placeholder="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="border rounded-lg px-3 py-2 text-sm w-40" />
-            <input placeholder="Max req/mo" type="number" min="1" value={maxRequests} onChange={(e) => setMaxRequests(e.target.value)} className="border rounded-lg px-3 py-2 text-sm w-28" />
-            <input placeholder="Max qty/mo" type="number" min="1" value={maxQuantity} onChange={(e) => setMaxQuantity(e.target.value)} className="border rounded-lg px-3 py-2 text-sm w-28" />
-            <button type="button" disabled={creating} onClick={createEmployee} className="px-4 py-2 bg-[#006039] text-white text-sm font-semibold rounded-lg disabled:opacity-50 cursor-pointer">Create account</button>
+            <input placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} className={`${premiumInput} flex-1 min-w-[140px]`} />
+            <input placeholder="Employee ID (optional)" value={loginId} onChange={(e) => setLoginId(e.target.value.toUpperCase())} className={`${premiumInput} w-44 font-mono uppercase`} />
+            <input placeholder="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={`${premiumInput} w-40`} />
+            <input placeholder="Max req/mo" type="number" min="1" value={maxRequests} onChange={(e) => setMaxRequests(e.target.value)} className={`${premiumInput} w-28`} />
+            <input placeholder="Max qty/mo" type="number" min="1" value={maxQuantity} onChange={(e) => setMaxQuantity(e.target.value)} className={`${premiumInput} w-28`} />
+            <button type="button" disabled={creating} onClick={createEmployee} className={premiumBtnPrimary}>Create account</button>
           </div>
-        </div>
+        </PremiumFormCard>
       )}
 
       {isManager && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-          <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
-            Your Department Setting
-          </h3>
-          <p className="text-xs text-slate-500">
+        <PremiumFormCard title="Your department setting" icon={Building2}>
+          <p className="text-xs text-slate-500 mb-3 leading-relaxed">
             Select the department you manage. Employees created under your account will automatically inherit this department.
           </p>
           <div className="flex items-center gap-4 flex-wrap">
-            <span className="text-xs font-semibold text-slate-655">Current Department: <strong className="text-[#006039]">{myDeptName || "None"}</strong></span>
+            <span className="premium-stat-chip bg-[#006039]/5 text-[#006039] border-[#006039]/20">
+              Current: <strong>{myDeptName || "None"}</strong>
+            </span>
             <select
               value={myDeptId}
               onChange={async (e) => {
@@ -287,7 +294,7 @@ export default function TeamManagementView({
                   }
                 }
               }}
-              className="border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-[#006039] max-w-[280px]"
+              className={`${premiumSelect} max-w-[280px]`}
             >
               <option value="">Choose department...</option>
               {departments.map((group) => (
@@ -301,89 +308,174 @@ export default function TeamManagementView({
               ))}
             </select>
           </div>
-        </div>
+        </PremiumFormCard>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-xl border divide-y">
-          <h3 className="p-4 font-semibold text-sm text-slate-700">
-            Your employees ({employees.length})
-          </h3>
-          {employees.map((emp) => {
-            const pending = pendingCount(emp.userId);
-            const active = selectedEmployeeId === emp.userId;
-            return (
-              <button
-                key={emp.userId}
-                type="button"
-                onClick={() => setSelectedEmployeeId(emp.userId)}
-                className={`w-full text-left px-4 py-3 text-sm flex items-center justify-between gap-2 hover:bg-slate-50 cursor-pointer ${active ? "bg-[#006039]/5 border-l-4 border-[#006039]" : ""}`}
-              >
-                <div>
-                  <p className="font-medium text-slate-800">
-                    {emp.name}{" "}
-                    <span className="font-mono text-[#006039] text-xs">{emp.loginId}</span>
-                  </p>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Limit: {emp.maxRequestsPerMonth ?? "—"} req/mo · {emp.maxQuantityPerMonth ?? "—"} qty/mo
-                    {emp.departmentName && ` · Dept: ${emp.departmentName}`}
-                  </p>
-                </div>
-                {pending > 0 && (
-                  <span className="shrink-0 min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
-                    {pending}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {employees.length === 0 && (
-            <p className="p-4 text-slate-400 text-sm">No employees assigned to you yet. Create an account above.</p>
-          )}
-        </div>
+        <PremiumPanel
+          title={`Your employees (${employees.length})`}
+          subtitle="Click a team member to review requests"
+          icon={Users}
+          noPadding
+        >
+          <div className="divide-y divide-slate-100 max-h-[420px] overflow-y-auto">
+            {employees.map((emp) => {
+              const pending = pendingCount(emp.userId);
+              const active = selectedEmployeeId === emp.userId;
+              return (
+                <button
+                  key={emp.userId}
+                  type="button"
+                  onClick={() => setSelectedEmployeeId(emp.userId)}
+                  className={`premium-list-item px-4 py-3.5 flex items-center justify-between gap-3 group ${active ? "premium-list-item-active" : "premium-list-item-idle"}`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold transition-colors ${active ? "bg-[#006039] text-white shadow-md" : "bg-slate-100 text-slate-600 group-hover:bg-[#006039]/10 group-hover:text-[#006039]"}`}>
+                      {emp.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 text-left">
+                      <p className="font-semibold text-slate-800 text-sm truncate">
+                        {emp.name}{" "}
+                        <span className="font-mono text-[#006039] text-xs">{emp.loginId}</span>
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                        Limit: {emp.maxRequestsPerMonth ?? "—"} req/mo · {emp.maxQuantityPerMonth ?? "—"} qty/mo
+                        {emp.departmentName && ` · ${emp.departmentName}`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {pending > 0 && (
+                      <span className="min-w-[1.35rem] h-6 px-2 flex items-center justify-center rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold ring-2 ring-amber-200/50 animate-pulse">
+                        {pending}
+                      </span>
+                    )}
+                    <ChevronRight className={`w-4 h-4 transition-transform ${active ? "text-[#006039] translate-x-0.5" : "text-slate-300 group-hover:text-slate-400"}`} />
+                  </div>
+                </button>
+              );
+            })}
+            {employees.length === 0 && (
+              <PremiumEmptyState
+                icon={Users}
+                title="No employees yet"
+                description="Create an account above to add team members under your management."
+              />
+            )}
+          </div>
+        </PremiumPanel>
 
-        <div className="bg-white rounded-xl border border-slate-200 min-h-[280px]">
+        <PremiumPanel noPadding className="min-h-[420px] flex flex-col">
           {!selectedEmployee ? (
-            <div className="p-8 text-center text-slate-400 text-sm">
-              <ClipboardList className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              Select an employee to view their current request and history.
-            </div>
+            <PremiumEmptyState
+              icon={ClipboardList}
+              title="Select an employee"
+              description="Click a team member to view their current request and full history."
+            />
           ) : (
-            <div className="p-4 space-y-4">
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="font-bold text-slate-800">{selectedEmployee.name}</h3>
-                  <p className="text-xs text-slate-500 font-mono">
-                    {selectedEmployee.loginId} {selectedEmployee.departmentName ? `· ${selectedEmployee.departmentName}` : ""}
-                  </p>
+            <div className="p-5 space-y-4 flex-1 flex flex-col">
+              <div className="flex justify-between items-start gap-3 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-[#006039] to-[#004d2e] text-white flex items-center justify-center font-bold shadow-md">
+                    {selectedEmployee.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800">{selectedEmployee.name}</h3>
+                    <p className="text-xs text-slate-500 font-mono">
+                      {selectedEmployee.loginId} {selectedEmployee.departmentName ? `· ${selectedEmployee.departmentName}` : ""}
+                    </p>
+                  </div>
                 </div>
-                <button type="button" onClick={() => setSelectedEmployeeId(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+                <button type="button" onClick={() => setSelectedEmployeeId(null)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer transition-colors">
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               {selectedPending.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-xs font-bold text-amber-800 uppercase tracking-wide">Pending approval</p>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    <p className="text-xs font-bold text-amber-800 uppercase tracking-wide">Pending your approval</p>
+                    <span className="ml-auto min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
+                      {selectedPending.length}
+                    </span>
+                  </div>
                   {selectedPending.map((r) => (
-                    <div key={r.requestId} className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm space-y-2">
-                      <p className="font-semibold">{r.partNumber} — {r.materialName}</p>
-                      <p className="text-xs text-slate-600">Qty {r.quantity} · {r.aircraftOrWorkOrder && `Purpose: ${r.aircraftOrWorkOrder}`}</p>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => acceptRequest(r.requestId)}
-                          className="flex items-center gap-1 text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold cursor-pointer"
-                        >
-                          <Check className="w-3.5 h-3.5" /> Accept
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => rejectRequest(r.requestId)}
-                          className="flex items-center gap-1 text-xs px-3 py-1.5 bg-rose-100 text-rose-800 rounded-lg font-semibold cursor-pointer"
-                        >
-                          <Ban className="w-3.5 h-3.5" /> Reject
-                        </button>
+                    <div key={r.requestId} className="rounded-xl border border-amber-200 overflow-hidden shadow-sm">
+                      {/* Card header */}
+                      <div className="bg-gradient-to-r from-amber-50 to-amber-100/60 px-4 py-2.5 flex items-center justify-between border-b border-amber-200/60">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-[#006039] font-mono">REQ-{r.requestId}</span>
+                          <span className="px-2 py-0.5 rounded-full bg-amber-200/70 text-amber-900 text-[10px] font-bold uppercase tracking-wider">
+                            Awaiting approval
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-500">{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : ""}</span>
+                      </div>
+                      {/* Card body */}
+                      <div className="bg-white p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-semibold text-sm text-slate-800">{r.partNumber} — {r.materialName}</p>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              Qty <span className="font-bold text-slate-700">{r.quantity}</span>
+                              {r.aircraftOrWorkOrder && <> · Purpose: <span className="text-slate-700">{r.aircraftOrWorkOrder}</span></>}
+                            </p>
+                          </div>
+                        </div>
+
+                        {rejectingRequestId === r.requestId ? (
+                          <div className="bg-rose-50/50 border border-rose-200 rounded-lg p-3 space-y-2.5">
+                            <p className="text-xs font-semibold text-rose-700">Provide a reason for rejection</p>
+                            <input
+                              placeholder="Rejection reason..."
+                              value={rejectionNotes}
+                              onChange={(e) => setRejectionNotes(e.target.value)}
+                              className="w-full text-xs p-2 border border-rose-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-300 bg-white placeholder-rose-300"
+                              autoFocus
+                            />
+                            <div className="flex gap-2 justify-end">
+                              <button
+                                type="button"
+                                onClick={() => setRejectingRequestId(null)}
+                                className="text-xs px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg font-semibold cursor-pointer transition-colors"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await rejectRequest(r.requestId, rejectionNotes.trim());
+                                  setRejectingRequestId(null);
+                                  setRejectionNotes("");
+                                }}
+                                className="text-xs px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-semibold cursor-pointer transition-colors shadow-sm"
+                              >
+                                Confirm rejection
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => acceptRequest(r.requestId)}
+                              className="flex items-center gap-1.5 text-xs px-4 py-2 bg-[#006039] hover:bg-[#004d2e] text-white rounded-lg font-semibold shadow-sm transition-all cursor-pointer hover:shadow-md"
+                            >
+                              <Check className="w-3.5 h-3.5" /> Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRejectingRequestId(r.requestId);
+                                setRejectionNotes("");
+                              }}
+                              className="flex items-center gap-1.5 text-xs px-4 py-2 border-2 border-rose-400 text-rose-600 hover:bg-rose-50 rounded-lg font-semibold transition-all cursor-pointer"
+                            >
+                              <Ban className="w-3.5 h-3.5" /> Reject
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -391,23 +483,32 @@ export default function TeamManagementView({
               )}
 
               <div>
-                <p className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">Request history</p>
-                <div className="divide-y max-h-52 overflow-y-auto border rounded-lg">
+                <p className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2 flex items-center gap-2">
+                  <History className="w-3.5 h-3.5 text-[#006039]" /> Request history
+                </p>
+                <div className="divide-y max-h-52 overflow-y-auto premium-surface border-0 shadow-none">
                   {selectedHistory.length === 0 ? (
-                    <p className="p-3 text-xs text-slate-400 text-center">No requests yet.</p>
+                    <p className="p-4 text-xs text-slate-400 text-center">No requests yet.</p>
                   ) : (
                     selectedHistory
                       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
                       .map((h) => (
-                        <div key={h.requestId} className="p-2.5 text-xs flex justify-between gap-2">
-                          <div>
-                            <span className="font-semibold text-slate-800">{h.partNumber} — {h.materialName}</span>
-                            <span className="text-slate-500 ml-1">Qty {h.quantity}</span>
+                        <div key={h.requestId} className="p-3 text-xs flex flex-col gap-1 hover:bg-slate-50/80 transition-colors">
+                          <div className="flex justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="font-semibold text-slate-800">{h.partNumber} — {h.materialName}</span>
+                              <span className="text-slate-500 ml-1">Qty {h.quantity}</span>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium text-[10px]">{requestStatusLabel(h.status)}</span>
+                              <span className="text-slate-400 text-[10px]">{new Date(h.createdAt).toLocaleDateString()}</span>
+                            </div>
                           </div>
-                          <div className="text-right shrink-0">
-                            <span className="block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">{requestStatusLabel(h.status)}</span>
-                            <span className="text-slate-400">{new Date(h.createdAt).toLocaleDateString()}</span>
-                          </div>
+                          {h.notes && (
+                            <div className="text-[10px] text-rose-700 bg-rose-50/80 p-2 rounded-lg border border-rose-100 italic">
+                              Reason: {h.notes}
+                            </div>
+                          )}
                         </div>
                       ))
                   )}
@@ -415,7 +516,7 @@ export default function TeamManagementView({
               </div>
             </div>
           )}
-        </div>
+        </PremiumPanel>
       </div>
     </div>
   );

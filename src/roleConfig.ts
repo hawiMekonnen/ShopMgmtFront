@@ -167,6 +167,7 @@ export function getRolePermissions(role: string): RolePermissions {
     canViewRequests: isAdmin || isManager || isEmployee,
     canViewAlerts: isAdmin || isManager || isProc || isEmployee,
     canViewProcurement: isProc,
+    canViewStockByShop: isAdmin || isProc,
     canReceiveStock: isAdmin,
     canDeleteMaterial: isAdmin,
     canSubmitRequest: isEmployee || isManager,

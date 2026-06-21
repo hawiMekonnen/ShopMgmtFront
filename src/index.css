@@ -28,3 +28,48 @@ body {
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 96, 57, 0.2) transparent;
 }
+
+@layer components {
+  .premium-surface {
+    @apply bg-white rounded-2xl border border-slate-200/80 shadow-sm;
+  }
+
+  .premium-surface-header {
+    @apply px-4 sm:px-5 py-3.5 bg-gradient-to-r from-slate-50/90 to-white border-b border-slate-100;
+  }
+
+  .premium-list-item {
+    @apply w-full text-left transition-all duration-200 cursor-pointer;
+  }
+
+  .premium-list-item-active {
+    @apply bg-gradient-to-r from-[#006039]/8 to-transparent border-l-4 border-[#006039] shadow-sm;
+  }
+
+  .premium-list-item-idle {
+    @apply hover:bg-slate-50/80 border-l-4 border-transparent;
+  }
+
+  .premium-alert-card {
+    @apply relative overflow-hidden rounded-xl border transition-all duration-200 hover:shadow-md hover:-translate-y-0.5;
+  }
+
+  .premium-stat-chip {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border;
+  }
+
+  .page-enter {
+    animation: page-enter 0.35s ease-out;
+  }
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -1,13 +1,64 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Search, RefreshCw, Loader2, Package, Bell, Clock, DollarSign, CheckCircle, History, X } from "lucide-react";
+import { Search, RefreshCw, Loader2, Package, Bell, Clock, DollarSign, ClipboardList, CheckCircle, XCircle, History, X, AlertTriangle, Sparkles, Building2, Inbox, ChevronRight, User } from "lucide-react";
 import { api, ApiError } from "../client";
 import { Material, MaterialRequest, AuthSession } from "../types";
 import { requestStatusLabel, normalizeRequestStatus } from "../requestStatus";
 import { filterAlertsForRole } from "../realtime";
+import {
+  PremiumPageHeader,
+  PremiumPanel,
+  PremiumEmptyState,
+  premiumSelect,
+  premiumBtnPrimary,
+  premiumBtnDanger,
+  premiumInput,
+} from "./PremiumUI";
 
 type ToastFn = (type: "success" | "error" | "warning" | "info", title: string, message?: string) => void;
 
 const MAX_DISPLAY = 5;
+
+/** Levenshtein edit distance — used for client-side fuzzy matching on typos. */
+function editDistance(a: string, b: string): number {
+  const la = a.length, lb = b.length;
+  if (la === 0) return lb;
+  if (lb === 0) return la;
+  const dp: number[][] = Array.from({ length: la + 1 }, (_, i) =>
+    Array.from({ length: lb + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= la; i++)
+    for (let j = 1; j <= lb; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[la][lb];
+}
+
+/** Score a material against a query — lower is better. Uses best substring distance. */
+function fuzzyScore(query: string, material: { name: string; partNumber: string; description?: string }): number {
+  const q = query.toLowerCase();
+  const fields = [material.name, material.partNumber, material.description ?? ""].map(f => f.toLowerCase());
+  let best = Infinity;
+  for (const field of fields) {
+    // Check direct substring first (distance 0)
+    if (field.includes(q)) return 0;
+    // Check each word in the field
+    const words = field.split(/[\s\-\/,._]+/);
+    for (const w of words) {
+      if (w.length === 0) continue;
+      const d = editDistance(q, w);
+      // Allow up to ~40% character difference
+      const threshold = Math.max(2, Math.floor(q.length * 0.4));
+      if (d <= threshold && d < best) best = d;
+    }
+    // Also check edit distance against the whole field if it's short
+    if (field.length <= q.length + 5) {
+      const d = editDistance(q, field);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
 
 interface SearchHistoryEntry {
   materialName: string;
@@ -91,6 +142,13 @@ export function MaterialSearchView({
   const [managerQty, setManagerQty] = useState("1");
   const [managerMaterialId, setManagerMaterialId] = useState<number | null>(null);
 
+  // Employee Dashboard Landing stats
+  const [profile, setProfile] = useState<any | null>(null);
+  const [activeCount, setActiveCount] = useState(0);
+  const [readyCount, setReadyCount] = useState(0);
+  const [monthQtyUsed, setMonthQtyUsed] = useState(0);
+  const [monthRequestsCount, setMonthRequestsCount] = useState(0);
+
   const displayResults = results.slice(0, MAX_DISPLAY);
 
   const runSearch = useCallback(async () => {
@@ -103,8 +161,35 @@ export function MaterialSearchView({
         aircraft: modelQuery.trim() || undefined,
         shopId: session.shopId,
       });
-      setResults(items.slice(0, MAX_DISPLAY));
-      items.slice(0, MAX_DISPLAY).forEach((m) => recordMaterialAccess(session.userId, m));
+
+      if (items.length > 0) {
+        setResults(items.slice(0, MAX_DISPLAY));
+        items.slice(0, MAX_DISPLAY).forEach((m) => recordMaterialAccess(session.userId, m));
+      } else if (materialQuery.trim()) {
+        // Fuzzy fallback — fetch all materials and rank by edit distance
+        try {
+          const all = await api.searchMaterials({ shopId: session.shopId });
+          const query = materialQuery.trim();
+          const scored = all
+            .map((m) => ({ material: m, score: fuzzyScore(query, m) }))
+            .filter((s) => s.score < Infinity)
+            .sort((a, b) => a.score - b.score)
+            .slice(0, MAX_DISPLAY);
+          if (scored.length > 0) {
+            const fuzzyResults = scored.map((s) => s.material);
+            setResults(fuzzyResults);
+            fuzzyResults.forEach((m) => recordMaterialAccess(session.userId, m));
+            addToast("info", "Showing closest matches", "No exact match found — displaying similar results.");
+          } else {
+            setResults([]);
+          }
+        } catch {
+          setResults([]);
+        }
+      } else {
+        setResults([]);
+      }
+
       if (materialQuery.trim() || modelQuery.trim()) {
         saveSearchHistory(session.userId, materialQuery, modelQuery);
         setSearchHistory(loadSearchHistory(session.userId));
@@ -123,23 +208,53 @@ export function MaterialSearchView({
     setHasSearched(false);
   }, [session.userId]);
 
-  const loadLastRequest = useCallback(async () => {
+  const loadDashboardData = useCallback(async () => {
     try {
+      if (session.role === "Employee" || session.role === "Technician") {
+        const me = await api.getMe();
+        setProfile(me);
+      }
+
       const list = await api.getMaterialRequests(session.shopId);
       const mine = list
         .filter((r) => !session.userId || r.requestedByUserId === session.userId)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      
       setLastRequest(mine[0] ?? null);
+
+      const active = mine.filter(
+        (r) =>
+          r.status === "PendingManagerApproval" ||
+          r.status === "Submitted" ||
+          r.status === "Approved"
+      );
+      setActiveCount(active.length);
+
+      const ready = mine.filter((r) => r.status === "ReadyForPickup");
+      setReadyCount(ready.length);
+
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const thisMonthRequests = mine.filter(
+        (r) =>
+          new Date(r.createdAt) >= startOfMonth &&
+          r.status !== "Cancelled" &&
+          r.status !== "Rejected"
+      );
+
+      setMonthRequestsCount(thisMonthRequests.length);
+      const qtySum = thisMonthRequests.reduce((sum, r) => sum + r.quantity, 0);
+      setMonthQtyUsed(qtySum);
     } catch {
-      setLastRequest(null);
+      // silent fail if some endpoints unavailable
     }
-  }, [session.shopId, session.userId]);
+  }, [session.shopId, session.userId, session.role]);
 
   useEffect(() => {
     setSearchHistory(loadSearchHistory(session.userId));
     loadRecent();
-    loadLastRequest();
-  }, [session.userId, loadRecent, loadLastRequest]);
+    loadDashboardData();
+  }, [session.userId, loadRecent, loadDashboardData]);
 
   const applyHistory = (entry: SearchHistoryEntry) => {
     setMaterialQuery(entry.materialName);
@@ -173,7 +288,7 @@ export function MaterialSearchView({
       });
       addToast("success", "Request submitted", "Sent to procurement — no approval needed.");
       setManagerMaterialId(null);
-      loadLastRequest();
+      loadDashboardData();
     } catch (e) {
       addToast("error", "Request failed", e instanceof ApiError ? e.detail : undefined);
     }
@@ -181,12 +296,181 @@ export function MaterialSearchView({
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-slate-800">Material search</h2>
-      <p className="text-sm text-slate-500">
-        {isManager
-          ? "Search and request materials — manager requests go directly to procurement."
-          : "Search store items by name, material ID, or model/type. Up to 5 items shown."}
-      </p>
+
+      {/* Employee Welcome Dashboard — only shown for employee/technician role */}
+      {!isManager && (
+        <>
+          {/* Welcome Banner */}
+          <div className="relative rounded-2xl overflow-hidden bg-gradient-to-r from-[#006039] to-[#004d2e] text-white p-6 shadow-lg border border-[#e2b007]/30">
+            <div className="absolute inset-0 pointer-events-none opacity-10">
+              <div className="absolute -top-10 -right-10 w-64 h-64 rounded-full bg-[#e2b007]" />
+              <div className="absolute bottom-0 left-1/3 w-48 h-48 rounded-full bg-emerald-300" />
+            </div>
+            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <p className="text-[#e2b007] text-xs font-bold tracking-wider uppercase mb-1">Airline Store Management</p>
+                <h2 className="text-2xl font-bold">
+                  Welcome back{profile?.name ? `, ${profile.name.split(" ")[0]}` : ""}!
+                </h2>
+                <p className="text-emerald-200 text-sm mt-1">
+                  {readyCount > 0
+                    ? `🔔 You have ${readyCount} request${readyCount !== 1 ? "s" : ""} ready for pickup.`
+                    : activeCount > 0
+                    ? `${activeCount} active request${activeCount !== 1 ? "s" : ""} in progress.`
+                    : "No pending requests. Search below to request a material."}
+                </p>
+              </div>
+              <div className="flex gap-3 shrink-0">
+                <div className="bg-black/20 rounded-xl px-4 py-3 text-center min-w-[80px]">
+                  <p className="text-2xl font-extrabold text-[#e2b007]">{activeCount}</p>
+                  <p className="text-[10px] text-emerald-200 mt-0.5 uppercase tracking-wide">Active</p>
+                </div>
+                <div className="bg-black/20 rounded-xl px-4 py-3 text-center min-w-[80px]">
+                  <p className="text-2xl font-extrabold text-amber-300">{readyCount}</p>
+                  <p className="text-[10px] text-emerald-200 mt-0.5 uppercase tracking-wide">Ready</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* KPI Cards Row */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Requests this month */}
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Requests / Month</span>
+                <div className="w-8 h-8 rounded-lg bg-[#006039]/10 flex items-center justify-center">
+                  <ClipboardList className="w-4 h-4 text-[#006039]" />
+                </div>
+              </div>
+              <p className="text-3xl font-extrabold text-slate-900">{monthRequestsCount}</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {profile?.maxRequestsPerMonth
+                  ? `of ${profile.maxRequestsPerMonth} limit`
+                  : "this calendar month"}
+              </p>
+              {profile?.maxRequestsPerMonth && (
+                <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#006039] rounded-full transition-all"
+                    style={{ width: `${Math.min(100, (monthRequestsCount / profile.maxRequestsPerMonth) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Qty used this month */}
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Qty / Month</span>
+                <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
+                  <Package className="w-4 h-4 text-[#e2b007]" />
+                </div>
+              </div>
+              <p className="text-3xl font-extrabold text-slate-900">{monthQtyUsed}</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {profile?.maxQuantityPerMonth
+                  ? `of ${profile.maxQuantityPerMonth} limit`
+                  : "units requested"}
+              </p>
+              {profile?.maxQuantityPerMonth && (
+                <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#e2b007] rounded-full transition-all"
+                    style={{ width: `${Math.min(100, (monthQtyUsed / profile.maxQuantityPerMonth) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Active requests */}
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">In Progress</span>
+                <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center">
+                  <RefreshCw className="w-4 h-4 text-blue-500" />
+                </div>
+              </div>
+              <p className="text-3xl font-extrabold text-slate-900">{activeCount}</p>
+              <p className="text-xs text-slate-400 mt-1">active requests</p>
+            </div>
+
+            {/* Ready for pickup */}
+            <div className={`rounded-xl border p-4 shadow-xs hover:shadow-md transition-shadow ${readyCount > 0 ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+              <div className="flex items-center justify-between mb-3">
+                <span className={`text-xs font-bold uppercase tracking-wider ${readyCount > 0 ? "text-emerald-700" : "text-slate-500"}`}>Ready Pickup</span>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${readyCount > 0 ? "bg-emerald-100" : "bg-slate-50"}`}>
+                  <Bell className={`w-4 h-4 ${readyCount > 0 ? "text-emerald-600 animate-bounce" : "text-slate-400"}`} />
+                </div>
+              </div>
+              <p className={`text-3xl font-extrabold ${readyCount > 0 ? "text-emerald-700" : "text-slate-900"}`}>{readyCount}</p>
+              <p className={`text-xs mt-1 ${readyCount > 0 ? "text-emerald-600 font-semibold" : "text-slate-400"}`}>
+                {readyCount > 0 ? "Go collect your items!" : "none ready yet"}
+              </p>
+            </div>
+          </div>
+
+          {/* Quick Action Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-start gap-3 hover:border-[#006039] hover:bg-[#006039]/5 transition-all cursor-pointer group" onClick={() => onRequest(0)}>
+              <div className="bg-[#006039]/10 text-[#006039] p-2.5 rounded-lg group-hover:bg-[#006039] group-hover:text-white transition-colors">
+                <Search className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-800">Search & Request</h4>
+                <p className="text-xs text-slate-400 mt-0.5 leading-snug">Find parts by name, ID, or aircraft model</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-start gap-3 hover:border-[#e2b007] hover:bg-amber-50/30 transition-all">
+              <div className="bg-amber-100 text-amber-700 p-2.5 rounded-lg">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-800">My Last Request</h4>
+                {lastRequest ? (
+                  <div className="mt-1">
+                    <p className="text-xs font-semibold text-slate-700">{lastRequest.partNumber} — {lastRequest.materialName}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Qty {lastRequest.quantity} · <span className="font-medium text-slate-600">{requestStatusLabel(lastRequest.status)}</span>
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400 mt-0.5">No requests yet</p>
+                )}
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-start gap-3 hover:border-slate-300 transition-all">
+              <div className="bg-slate-100 text-slate-600 p-2.5 rounded-lg">
+                <DollarSign className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-800">Monthly Limits</h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {profile?.maxRequestsPerMonth
+                    ? `${monthRequestsCount}/${profile.maxRequestsPerMonth} req · ${monthQtyUsed}/${profile.maxQuantityPerMonth ?? "∞"} qty`
+                    : "No limits set for your account"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Search section heading */}
+          <div className="flex items-center gap-3 pt-2 border-t border-slate-100">
+            <Search className="w-5 h-5 text-[#006039]" />
+            <h3 className="text-base font-bold text-slate-800">Search Materials</h3>
+            <p className="text-xs text-slate-400">Find parts by name, part number, or aircraft type</p>
+          </div>
+        </>
+      )}
+
+      {isManager && (
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Material search</h2>
+          <p className="text-sm text-slate-500 mt-1">
+            Search and request materials — manager requests go directly to procurement.
+          </p>
+        </div>
+      )}
       <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-wrap gap-3">
         <input
           placeholder="Material name or ID"
@@ -336,11 +620,13 @@ export function MaterialRequestsView({
   addToast,
   executeApiCall,
   initialMaterialId,
+  onStockChanged,
 }: {
   session: AuthSession;
   addToast: ToastFn;
   executeApiCall: <T,>(call: () => Promise<T>, msg?: string) => Promise<T | null>;
   initialMaterialId?: number | null;
+  onStockChanged?: () => void;
 }) {
   const [requests, setRequests] = useState<MaterialRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -350,6 +636,12 @@ export function MaterialRequestsView({
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [showHistoryForUserId, setShowHistoryForUserId] = useState<number | null>(null);
   const [showHistoryForUserName, setShowHistoryForUserName] = useState<string>("");
+  const [rejectingRequestId, setRejectingRequestId] = useState<number | null>(null);
+  const [rejectionNotes, setRejectionNotes] = useState<string>("");
+  const [editingRequestId, setEditingRequestId] = useState<number | null>(null);
+  const [editQty, setEditQty] = useState("");
+  const [editPurpose, setEditPurpose] = useState("");
+  const [editNotes, setEditNotes] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -389,26 +681,40 @@ export function MaterialRequestsView({
   }, [load]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold text-slate-800">
-          {isManager ? "Approve employee requests" : "My material requests"}
-        </h2>
-        <button onClick={load} className="p-2 border rounded-lg hover:bg-slate-50 cursor-pointer">
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
+    <div className="space-y-6 page-enter">
+      <PremiumPageHeader
+        icon={isManager ? ClipboardList : ClipboardList}
+        title={isManager ? "Approve employee requests" : "My material requests"}
+        subtitle={
+          isManager
+            ? "Review and action pending requests from your team."
+            : "Track all your material requests and their current status."
+        }
+        onRefresh={load}
+        loading={loading}
+        badge={
+          requests.length > 0 ? (
+            <span className="premium-stat-chip bg-white/10 text-white border-white/20">
+              {requests.filter((r) => statusFilter === "all" ? true : String(r.status) === statusFilter).length} shown
+            </span>
+          ) : undefined
+        }
+      />
 
       {showHistoryForUserId !== null && (
-        <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 relative space-y-3">
-          <button
-            onClick={() => setShowHistoryForUserId(null)}
-            className="absolute top-2 right-3 text-slate-400 hover:text-slate-600 text-xs font-semibold cursor-pointer"
-          >
-            Close history
-          </button>
-          <h3 className="text-sm font-bold text-slate-700">Request history for {showHistoryForUserName}</h3>
-          <div className="divide-y max-h-48 overflow-y-auto bg-white rounded-lg border">
+        <PremiumPanel
+          title={`Request history — ${showHistoryForUserName}`}
+          icon={History}
+          badge={
+            <button
+              onClick={() => setShowHistoryForUserId(null)}
+              className="text-xs font-semibold text-slate-500 hover:text-[#006039] cursor-pointer"
+            >
+              Close
+            </button>
+          }
+        >
+          <div className="divide-y max-h-48 overflow-y-auto premium-surface border-0 shadow-none">
             {requests
               .filter((x) => x.requestedByUserId === showHistoryForUserId)
               .map((h) => (
@@ -427,18 +733,18 @@ export function MaterialRequestsView({
               <p className="p-3 text-center text-slate-400 text-xs">No prior request history found.</p>
             )}
           </div>
-        </div>
+        </PremiumPanel>
       )}
 
       {isManager && (
-        <div className="flex items-center gap-2">
-          <label className="text-xs font-semibold text-slate-600">Status filter</label>
+        <div className="premium-surface px-4 py-3 flex items-center gap-3">
+          <label className="text-xs font-bold text-slate-500 uppercase tracking-wide shrink-0">Filter</label>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            className={`${premiumSelect} flex-1 max-w-xs`}
           >
-            <option value="all">All</option>
+            <option value="all">All statuses</option>
             <option value="Submitted">Submitted</option>
             <option value="Approved">Approved</option>
             <option value="ReadyForPickup">Ready for pickup</option>
@@ -449,104 +755,296 @@ export function MaterialRequestsView({
         </div>
       )}
 
+      {/* New request form (employee) */}
       {isEmployee && requestMaterialId && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
-          <p className="text-sm font-semibold">New request for material #{requestMaterialId}</p>
-          <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="border rounded px-2 py-1 text-sm w-24" />
-          <input
-            placeholder="Purpose / reference *"
-            value={purpose}
-            onChange={(e) => setPurpose(e.target.value)}
-            required
-            className="border rounded px-2 py-1 text-sm ml-2 min-w-[200px]"
-          />
-          <button onClick={submitRequest} className="ml-2 px-3 py-1 bg-[#006039] text-white text-xs rounded-lg font-semibold cursor-pointer">
-            Submit
-          </button>
+        <div className="bg-gradient-to-r from-[#006039]/5 to-[#e2b007]/5 border border-[#006039]/25 rounded-xl p-5 space-y-3 shadow-xs">
+          <p className="text-sm font-bold text-[#006039]">📦 New request for material #{requestMaterialId}</p>
+          <div className="flex flex-wrap gap-2">
+            <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-sm w-24 bg-white focus:outline-none focus:ring-2 focus:ring-[#006039]/30" />
+            <input
+              placeholder="Purpose / reference *"
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              required
+              className="border border-slate-200 rounded-lg px-3 py-2 text-sm flex-1 min-w-[200px] bg-white focus:outline-none focus:ring-2 focus:ring-[#006039]/30"
+            />
+            <button onClick={submitRequest} className="px-5 py-2 bg-[#006039] hover:bg-[#004d2e] text-white text-xs rounded-lg font-bold cursor-pointer transition-colors shadow-sm">
+              Submit Request
+            </button>
+          </div>
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-slate-200 divide-y">
+      {/* Request cards */}
+      <div className="space-y-3">
         {requests
           .filter((r) => (statusFilter === "all" ? true : String(r.status) === statusFilter))
-          .map((r) => (
-          <div key={r.requestId} className="p-4 flex flex-wrap justify-between gap-2 items-center">
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold text-sm">
-                #{r.requestId} — {r.partNumber} — {r.materialName}
-              </p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Qty {r.quantity}
-                <span className="mx-1.5 text-slate-300">·</span>
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
-                  {requestStatusLabel(r.status)}
-                </span>
-                {r.status === "Issued" && (
-                  <span className="inline-flex items-center gap-1 ml-2 text-[11px] font-semibold text-emerald-700">
-                    <CheckCircle className="w-4 h-4" /> Collected
-                  </span>
+          .map((r) => {
+            const status = normalizeRequestStatus(r.status);
+            const borderColor =
+              status === "Issued"                ? "border-l-emerald-500" :
+              status === "ReadyForPickup"         ? "border-l-[#006039]"  :
+              status === "Approved"               ? "border-l-blue-400"   :
+              status === "PendingManagerApproval" ? "border-l-amber-400"  :
+              status === "Rejected"               ? "border-l-rose-400"   :
+              status === "Cancelled"              ? "border-l-slate-300"  :
+                                                    "border-l-slate-400";
+            const badgeCls =
+              status === "Issued"                ? "bg-emerald-100 text-emerald-800 border-emerald-200"  :
+              status === "ReadyForPickup"         ? "bg-[#006039]/10 text-[#006039] border-[#006039]/20" :
+              status === "Approved"               ? "bg-blue-100 text-blue-800 border-blue-200"          :
+              status === "PendingManagerApproval" ? "bg-amber-100 text-amber-800 border-amber-200"       :
+              status === "Rejected"               ? "bg-rose-100 text-rose-700 border-rose-200"          :
+              status === "Cancelled"              ? "bg-slate-100 text-slate-500 border-slate-200"       :
+                                                    "bg-slate-100 text-slate-600 border-slate-200";
+            return (
+              <div
+                key={r.requestId}
+                className={`bg-white rounded-xl border border-slate-200 border-l-4 ${borderColor} shadow-xs hover:shadow-md transition-all duration-150 overflow-hidden`}
+              >
+                {editingRequestId === r.requestId ? (
+                  /* ── Edit form ── */
+                  <div className="p-5 space-y-4 bg-slate-50">
+                    <p className="text-xs font-bold text-[#006039] uppercase tracking-wide">✏ Edit Request REQ-{r.requestId}</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">Quantity</label>
+                        <input
+                          type="number" min="1" value={editQty}
+                          onChange={(e) => setEditQty(e.target.value)}
+                          className="border border-slate-200 rounded-lg px-2.5 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#006039]/30"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">Purpose / Work Order</label>
+                        <input
+                          value={editPurpose} onChange={(e) => setEditPurpose(e.target.value)}
+                          className="border border-slate-200 rounded-lg px-2.5 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#006039]/30"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">Notes (Optional)</label>
+                        <input
+                          value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
+                          placeholder="e.g. urgent, replacement"
+                          className="border border-slate-200 rounded-lg px-2.5 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#006039]/30"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setEditingRequestId(null)}
+                        className="text-xs px-4 py-1.5 bg-white border border-slate-200 text-slate-700 font-semibold rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          executeApiCall(
+                            () => api.editMaterialRequest(r.requestId, {
+                              quantity: parseFloat(editQty) || 1,
+                              aircraftOrWorkOrder: editPurpose.trim(),
+                              notes: editNotes.trim() || undefined,
+                            }),
+                            "Request edited successfully"
+                          ).then(() => { setEditingRequestId(null); load(); });
+                        }}
+                        className="text-xs px-4 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white font-bold rounded-lg cursor-pointer shadow-sm transition-colors"
+                      >
+                        Save Changes
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── Card view ── */
+                  <div className="p-4">
+                    {/* Top row: REQ-ID + status badge + timestamp */}
+                    <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold text-[#006039] font-mono tracking-wide">REQ-{r.requestId}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border ${badgeCls}`}>
+                          {requestStatusLabel(r.status)}
+                        </span>
+                        {status === "Issued" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200">
+                            <CheckCircle className="w-3 h-3" /> Collected
+                          </span>
+                        )}
+                        {status === "ReadyForPickup" && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#006039] animate-pulse">
+                            🟢 Ready for pickup
+                          </span>
+                        )}
+                      </div>
+                      {r.createdAt && (
+                        <span className="text-[11px] text-slate-400 shrink-0">{new Date(r.createdAt).toLocaleString()}</span>
+                      )}
+                    </div>
+
+                    {/* Material name */}
+                    <p className="font-bold text-slate-800 text-sm leading-snug">
+                      {r.partNumber} <span className="text-slate-400 font-normal mx-1">—</span> {r.materialName}
+                    </p>
+
+                    {/* Details row */}
+                    <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-500">
+                      <span>
+                        <span className="font-semibold text-slate-700">Qty</span>{" "}
+                        <span className="font-bold text-slate-900">{r.quantity}</span>
+                      </span>
+                      <span>
+                        <span className="font-semibold text-slate-700">By:</span>{" "}
+                        {r.requestedByName || "Employee"}
+                      </span>
+                      {r.aircraftOrWorkOrder && (
+                        <span>
+                          <span className="font-semibold text-slate-700">Purpose:</span>{" "}
+                          {r.aircraftOrWorkOrder}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Rejection reason */}
+                    {r.notes && status === "Rejected" && (
+                      <div className="mt-3 flex items-start gap-2 p-2.5 bg-rose-50 border border-rose-200 rounded-lg">
+                        <XCircle className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
+                        <p className="text-xs">
+                          <span className="font-bold text-rose-800">Rejection reason: </span>
+                          <span className="text-rose-700 italic">"{r.notes}"</span>
+                        </p>
+                      </div>
+                    )}
+
+                    {/* General note */}
+                    {r.notes && status !== "Rejected" && (
+                      <div className="mt-3 p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+                        <p className="text-xs">
+                          <span className="font-semibold text-slate-600">Note: </span>
+                          <span className="text-slate-500 italic">"{r.notes}"</span>
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-2 items-center">
+
+                      {/* Manager approve/reject */}
+                      {isManager && status === "PendingManagerApproval" && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => executeApiCall(() => api.managerApproveRequest(r.requestId), "Accepted — sent to procurement").then(load)}
+                            className="flex items-center gap-1.5 text-xs px-4 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white font-bold rounded-lg cursor-pointer shadow-sm transition-all hover:shadow-md"
+                          >
+                            ✓ Accept
+                          </button>
+                          {rejectingRequestId === r.requestId ? (
+                            <div className="flex flex-wrap gap-1.5 items-center bg-rose-50 border border-rose-200 rounded-lg p-2">
+                              <input
+                                placeholder="Rejection reason..."
+                                value={rejectionNotes}
+                                onChange={(e) => setRejectionNotes(e.target.value)}
+                                className="text-xs p-1.5 border border-rose-200 rounded-lg min-w-[160px] focus:outline-none focus:ring-1 focus:ring-rose-400 bg-white"
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  executeApiCall(() => api.managerRejectRequest(r.requestId, rejectionNotes.trim() || "Rejected by manager"), "Request rejected")
+                                    .then(() => { setRejectingRequestId(null); setRejectionNotes(""); load(); });
+                                }}
+                                className="text-xs px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg cursor-pointer transition-colors"
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRejectingRequestId(null)}
+                                className="text-xs px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-white rounded-lg cursor-pointer transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => { setRejectingRequestId(r.requestId); setRejectionNotes(""); }}
+                              className="text-xs px-4 py-1.5 border-2 border-rose-400 text-rose-600 hover:bg-rose-50 font-bold rounded-lg cursor-pointer transition-colors"
+                            >
+                              ✕ Reject
+                            </button>
+                          )}
+                        </>
+                      )}
+
+                      {/* Employee edit / cancel */}
+                      {r.requestedByUserId === session.userId &&
+                        (status === "Submitted" || status === "PendingManagerApproval" || status === "Approved") && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingRequestId(r.requestId);
+                                setEditQty(String(r.quantity));
+                                setEditPurpose(r.aircraftOrWorkOrder || "");
+                                setEditNotes(r.notes || "");
+                              }}
+                              className="text-xs px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg cursor-pointer transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (confirm("Are you sure you want to cancel this request?")) {
+                                  executeApiCall(() => api.cancelRequest(r.requestId, "Cancelled by user"), "Request cancelled").then(load);
+                                }
+                              }}
+                              className="text-xs px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-lg cursor-pointer transition-colors border border-rose-200"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        )}
+
+                      {/* Confirm pickup */}
+                      {(isEmployee || isManager) && r.status === "ReadyForPickup" && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const ok = await executeApiCall(
+                              () => api.issueRequest(r.requestId, r.requestedByUserId),
+                              "Issued — stock collected"
+                            );
+                            if (ok) { load(); onStockChanged?.(); }
+                          }}
+                          className="flex items-center gap-1.5 text-xs px-4 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white font-bold rounded-lg cursor-pointer shadow-sm transition-all hover:shadow-md"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" /> Confirm pickup
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
-                {r.createdAt && (
-                  <>
-                    <span className="mx-1.5 text-slate-300">·</span>
-                    <span className="text-slate-400">{new Date(r.createdAt).toLocaleString()}</span>
-                  </>
-                )}
-              </p>
-              <p className="text-xs mt-1.5">
-                <span className="font-bold text-slate-800">Requested by:</span>{" "}
-                <span className="text-slate-700">{r.requestedByName || "Employee"}</span>
-              </p>
-              {r.aircraftOrWorkOrder && (
-                <p className="text-xs mt-0.5 text-slate-500">
-                  <span className="font-semibold text-slate-600">Purpose:</span> {r.aircraftOrWorkOrder}
-                </p>
-              )}
-            </div>
-            <div className="flex gap-2 shrink-0">
-              {isManager && normalizeRequestStatus(r.status) === "PendingManagerApproval" && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      executeApiCall(() => api.managerApproveRequest(r.requestId), "Accepted — sent to procurement").then(load)
-                    }
-                    className="text-xs px-2 py-1 bg-emerald-100 text-emerald-900 font-semibold rounded-lg hover:bg-emerald-200 cursor-pointer"
-                  >
-                    Accept
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      executeApiCall(() => api.managerRejectRequest(r.requestId, "Rejected by manager"), "Request rejected").then(load)
-                    }
-                    className="text-xs px-2 py-1 bg-rose-100 text-rose-800 font-semibold rounded-lg hover:bg-rose-200 cursor-pointer"
-                  >
-                    Reject
-                  </button>
-                </>
-              )}
-              {(isEmployee || isManager) && r.status === "ReadyForPickup" && (
-                <button
-                  onClick={() =>
-                    executeApiCall(
-                      () => api.issueRequest(r.requestId, r.requestedByUserId),
-                      "Issued — stock collected"
-                    ).then(load)
-                  }
-                  className="text-xs px-2 py-1 bg-[#006039] text-white rounded-lg cursor-pointer"
-                >
-                  Confirm pickup
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        {requests.length === 0 && !loading && <p className="p-6 text-center text-slate-400 text-sm">No requests.</p>}
+              </div>
+            );
+          })}
+
+        {/* Empty state */}
+        {requests.length === 0 && !loading && (
+          <PremiumEmptyState
+            icon={ClipboardList}
+            title="No requests yet"
+            description="Your submitted material requests will appear here."
+          />
+        )}
       </div>
     </div>
   );
 }
+
 
 export function AlertsView({
   executeApiCall,
@@ -605,49 +1103,92 @@ export function AlertsView({
     }
   };
 
+  const typeIcon = (type: string) => {
+    switch (type) {
+      case "LowStock": return AlertTriangle;
+      case "ExpiryWarning": return Clock;
+      case "PickupReady": return CheckCircle;
+      case "NewMaterialAdded": return Sparkles;
+      case "QuarantineReview": return XCircle;
+      default: return Bell;
+    }
+  };
+
+  const typeAccent = (type: string) => {
+    switch (type) {
+      case "LowStock": return "border-l-amber-400";
+      case "ExpiryWarning": return "border-l-orange-400";
+      case "PickupReady": return "border-l-emerald-500";
+      case "NewMaterialAdded": return "border-l-blue-400";
+      case "QuarantineReview": return "border-l-rose-500";
+      default: return "border-l-slate-400";
+    }
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
-        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-          <Bell className="w-6 h-6" /> Alerts
-        </h2>
-        <button type="button" onClick={load} disabled={loading} className="text-sm font-medium text-[#006039] hover:underline disabled:opacity-50 cursor-pointer">
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
-      {role === "Employee" && (
-        <p className="text-sm text-slate-500">
-          Pickup-ready requests and newly added catalog materials.
-        </p>
-      )}
-      <div className="bg-white rounded-xl border divide-y shadow-xs">
-        {alerts.map((a) => (
-          <div key={a.alertId} className="p-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 text-sm">
-            <div className="space-y-1.5 min-w-0">
-              <span className={`inline-block text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border ${typeStyle(a.type)}`}>
-                {typeLabel(a.type)}
-              </span>
-              <p className="font-semibold text-slate-800">{a.materialName}</p>
-              {a.note && <p className="text-slate-600">{a.note}</p>}
-              <p className="text-xs text-slate-400">
-                {a.currentQuantity > 0 && <>Qty {a.currentQuantity} · </>}
-                {a.requestId != null && <>Request #{a.requestId} · </>}
-                {a.triggeredAt && new Date(a.triggeredAt).toLocaleString()}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() =>
-                executeApiCall(() => api.resolveAlert(a.alertId, "Acknowledged", userId)).then(load)
-              }
-              className="shrink-0 text-xs text-[#006039] font-semibold border border-[#006039]/30 px-3 py-1.5 rounded-lg hover:bg-[#006039]/5 cursor-pointer"
+    <div className="space-y-6 page-enter">
+      <PremiumPageHeader
+        icon={Bell}
+        title="Alerts"
+        subtitle={
+          role === "Employee"
+            ? "Pickup-ready requests and newly added catalog materials."
+            : "Active notifications across your workspace."
+        }
+        onRefresh={load}
+        loading={loading}
+        badge={
+          alerts.length > 0 ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#e2b007]/20 border border-[#e2b007]/40 text-[#e2b007] text-xs font-bold">
+              {alerts.length} active
+            </span>
+          ) : undefined
+        }
+      />
+
+      <div className="space-y-3">
+        {alerts.map((a) => {
+          const Icon = typeIcon(a.type);
+          return (
+            <div
+              key={a.alertId}
+              className={`premium-alert-card premium-surface border-l-4 ${typeAccent(a.type)} p-0`}
             >
-              Dismiss
-            </button>
-          </div>
-        ))}
+              <div className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                <div className="flex gap-4 min-w-0">
+                  <div className={`shrink-0 w-11 h-11 rounded-xl flex items-center justify-center border ${typeStyle(a.type)}`}>
+                    <Icon className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1.5 min-w-0">
+                    <span className={`inline-block text-[10px] font-bold uppercase tracking-wide px-2.5 py-0.5 rounded-full border ${typeStyle(a.type)}`}>
+                      {typeLabel(a.type)}
+                    </span>
+                    <p className="font-bold text-slate-800 text-sm">{a.materialName}</p>
+                    {a.note && <p className="text-slate-600 text-sm leading-relaxed">{a.note}</p>}
+                    <p className="text-xs text-slate-400 flex flex-wrap gap-x-2">
+                      {a.currentQuantity > 0 && <span>Qty {a.currentQuantity}</span>}
+                      {a.requestId != null && <span>Request #{a.requestId}</span>}
+                      {a.triggeredAt && <span>{new Date(a.triggeredAt).toLocaleString()}</span>}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    executeApiCall(() => api.resolveAlert(a.alertId, "Acknowledged", userId)).then(load)
+                  }
+                  className="shrink-0 self-start sm:self-center text-xs text-[#006039] font-bold border-2 border-[#006039]/25 px-4 py-2 rounded-xl hover:bg-[#006039] hover:text-white transition-all duration-200 cursor-pointer shadow-sm hover:shadow-md"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          );
+        })}
         {alerts.length === 0 && !loading && (
-          <p className="p-6 text-center text-slate-400">No active alerts.</p>
+          <PremiumPanel>
+            <PremiumEmptyState icon={Bell} title="No active alerts" description="You're all caught up — new alerts will appear here." />
+          </PremiumPanel>
         )}
       </div>
     </div>
@@ -839,6 +1380,8 @@ export function ProcurementInboxView({
   // Mark ready form state
   const [readyNotes, setReadyNotes] = useState("");
   const [pickupTime, setPickupTime] = useState("");
+  const [rejectNotes, setRejectNotes] = useState("");
+  const [showRejectForm, setShowRejectForm] = useState(false);
 
   const loadSummaries = async () => {
     const summs = await executeApiCall(() => api.getDepartmentInboxSummary());
@@ -880,6 +1423,8 @@ export function ProcurementInboxView({
     setHistoryLoading(true);
     setReadyNotes("");
     setPickupTime("");
+    setRejectNotes("");
+    setShowRejectForm(false);
     try {
       const allReqs = await api.getMaterialRequests(undefined, undefined, undefined);
       const history = allReqs
@@ -909,7 +1454,7 @@ export function ProcurementInboxView({
 
   const handleReject = async () => {
     if (!selectedRequest) return;
-    const notes = readyNotes || "Rejected by Procurement";
+    const notes = rejectNotes.trim() || "Rejected by Procurement";
     const ok = await executeApiCall(
       () => api.rejectRequest(selectedRequest.requestId, notes),
       "Request rejected"
@@ -923,192 +1468,253 @@ export function ProcurementInboxView({
 
   const activeDept = inboxSummaries.find((d) => d.departmentId === selectedDeptId);
 
+  const totalPending = inboxSummaries.reduce((acc, curr) => acc + curr.pendingCount, 0);
+
+  const statusBadge = (status: string) => {
+    const s = normalizeRequestStatus(status);
+    if (s === "Approved") return "bg-blue-50 text-blue-700 border-blue-200";
+    if (s === "Submitted") return "bg-slate-100 text-slate-700 border-slate-200";
+    return "bg-slate-100 text-slate-600 border-slate-200";
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <Package className="w-6 h-6 text-[#006039]" /> Procurement inbox
-          </h2>
-          <p className="text-sm text-slate-500">
-            Receive and process material orders from different airline departments.
-          </p>
+    <div className="space-y-6 page-enter">
+      <PremiumPageHeader
+        icon={Inbox}
+        title="Procurement inbox"
+        subtitle="Receive and process material orders from different airline departments."
+        onRefresh={() => { loadRequests(); loadSummaries(); }}
+        loading={loading}
+        badge={
+          totalPending > 0 ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#e2b007]/20 border border-[#e2b007]/40 text-[#e2b007] text-xs font-bold">
+              {totalPending} pending
+            </span>
+          ) : undefined
+        }
+      />
+
+      {shops.length > 0 && (
+        <div className="premium-surface px-4 py-3 flex flex-wrap items-center gap-3">
+          <Building2 className="w-4 h-4 text-[#006039] shrink-0" />
+          <label className="text-xs font-bold text-slate-500 uppercase tracking-wide shrink-0">Shop location</label>
+          <select
+            value={shopId}
+            onChange={(e) => setShopId(e.target.value ? Number(e.target.value) : "")}
+            className={`${premiumSelect} flex-1 max-w-xs`}
+          >
+            {shops.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
         </div>
-        <button onClick={() => { loadRequests(); loadSummaries(); }} className="p-2 border rounded-lg hover:bg-slate-50 cursor-pointer">
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
+      )}
 
-      <div className="flex flex-wrap gap-4 items-center bg-white border border-slate-200 p-4 rounded-xl justify-between">
-        {shops.length > 0 && (
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-600">Shop Location</label>
-            <select
-              value={shopId}
-              onChange={(e) => setShopId(e.target.value ? Number(e.target.value) : "")}
-              className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#006039]"
-            >
-              {shops.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Sidebar: Departments list */}
-        <div className="lg:col-span-1 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col min-h-[300px]">
-          <div className="px-4 py-3 bg-slate-50 border-b font-bold text-xs uppercase tracking-wider text-slate-500">
-            Airline Departments
-          </div>
-          <div className="flex-1 divide-y divide-slate-100 overflow-y-auto max-h-[500px]">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Departments sidebar */}
+        <PremiumPanel
+          title="Airline departments"
+          className="lg:col-span-3"
+          noPadding
+          badge={
+            <span className="text-[10px] font-bold text-slate-400">{inboxSummaries.length} depts</span>
+          }
+        >
+          <div className="divide-y divide-slate-100 max-h-[520px] overflow-y-auto">
             <button
+              type="button"
               onClick={() => setSelectedDeptId(null)}
-              className={`w-full text-left px-4 py-3 text-sm flex items-center justify-between transition-colors ${selectedDeptId === null ? "bg-[#006039]/5 border-l-4 border-[#006039] font-semibold text-[#006039]" : "hover:bg-slate-50"}`}
+              className={`premium-list-item px-4 py-3.5 flex items-center justify-between gap-2 ${selectedDeptId === null ? "premium-list-item-active" : "premium-list-item-idle"}`}
             >
-              <span>All requests</span>
-              <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-600 font-bold">
-                {inboxSummaries.reduce((acc, curr) => acc + curr.pendingCount, 0)}
+              <span className="text-sm font-semibold">All requests</span>
+              <span className="bg-slate-100 px-2.5 py-0.5 rounded-full text-xs text-slate-600 font-bold">
+                {totalPending}
               </span>
             </button>
             {inboxSummaries.map((dept) => (
               <button
                 key={dept.departmentId}
+                type="button"
                 onClick={() => setSelectedDeptId(dept.departmentId)}
-                className={`w-full text-left px-4 py-3 text-sm flex items-center justify-between transition-colors ${selectedDeptId === dept.departmentId ? "bg-[#006039]/5 border-l-4 border-[#006039] font-semibold text-[#006039]" : "hover:bg-slate-50"}`}
+                className={`premium-list-item px-4 py-3.5 flex items-center justify-between gap-2 ${selectedDeptId === dept.departmentId ? "premium-list-item-active" : "premium-list-item-idle"}`}
               >
-                <div className="min-w-0 pr-2">
-                  <p className="truncate font-medium">{dept.name}</p>
+                <div className="min-w-0 pr-2 text-left">
+                  <p className="truncate font-medium text-sm text-slate-800">{dept.name}</p>
                   <p className="text-[10px] text-slate-400 truncate">{dept.category}</p>
                 </div>
-                {dept.pendingCount > 0 && (
-                  <span className="bg-amber-100 px-2 py-0.5 rounded-full text-xs text-amber-800 font-bold shrink-0">
+                {dept.pendingCount > 0 ? (
+                  <span className="bg-amber-100 px-2 py-0.5 rounded-full text-xs text-amber-800 font-bold shrink-0 ring-2 ring-amber-200/50">
                     {dept.pendingCount}
                   </span>
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
                 )}
               </button>
             ))}
           </div>
-        </div>
+        </PremiumPanel>
 
-        {/* Center: Department requests list */}
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col min-h-[400px]">
-          <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-            <h3 className="text-sm font-bold text-slate-700">
-              {activeDept ? `${activeDept.name} requests` : "All department requests"} ({requests.length})
-            </h3>
-          </div>
-          <div className="flex-1 divide-y divide-slate-100 overflow-y-auto max-h-[500px]">
+        {/* Request list */}
+        <PremiumPanel
+          title={activeDept ? `${activeDept.name} requests` : "All department requests"}
+          subtitle={`${requests.length} in queue`}
+          icon={ClipboardList}
+          className="lg:col-span-5"
+          noPadding
+        >
+          <div className="divide-y divide-slate-100 max-h-[520px] overflow-y-auto p-2 space-y-0">
             {requests.map((r) => {
               const active = selectedRequest?.requestId === r.requestId;
+              const status = normalizeRequestStatus(r.status);
               return (
                 <button
                   key={r.requestId}
+                  type="button"
                   onClick={() => selectRequest(r)}
-                  className={`w-full text-left p-4 text-sm hover:bg-slate-50 transition-colors flex flex-col gap-1 border-l-4 ${active ? "bg-[#006039]/5 border-[#006039]" : "border-transparent"}`}
+                  className={`w-full text-left rounded-xl p-4 mb-2 transition-all duration-200 border ${
+                    active
+                      ? "bg-gradient-to-r from-[#006039]/8 to-white border-[#006039]/30 shadow-md ring-1 ring-[#006039]/20"
+                      : "bg-white border-slate-200/80 hover:border-[#006039]/20 hover:shadow-sm hover:-translate-y-0.5"
+                  }`}
                 >
-                  <div className="flex justify-between items-start w-full">
-                    <p className="font-bold text-slate-800">#{r.requestId} — {r.partNumber}</p>
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-650">
+                  <div className="flex justify-between items-start gap-2 mb-2">
+                    <span className="text-xs font-bold text-[#006039] font-mono">REQ-{r.requestId}</span>
+                    <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${statusBadge(r.status)}`}>
                       {requestStatusLabel(r.status)}
                     </span>
                   </div>
-                  <p className="text-slate-600 text-xs font-semibold">{r.materialName}</p>
-                  <div className="flex justify-between items-center w-full mt-2 text-xs text-slate-500">
-                    <p>Qty: <span className="font-bold text-slate-700">{r.quantity}</span> · By: {r.requestedByName}</p>
-                    <p className="font-mono text-[10px]">{new Date(r.createdAt).toLocaleDateString()}</p>
+                  <p className="font-bold text-slate-800 text-sm">{r.partNumber}</p>
+                  <p className="text-slate-600 text-xs font-medium mt-0.5">{r.materialName}</p>
+                  <div className="flex justify-between items-center mt-3 pt-2 border-t border-slate-100 text-xs text-slate-500">
+                    <span className="flex items-center gap-1">
+                      <User className="w-3 h-3" /> {r.requestedByName}
+                    </span>
+                    <span>Qty <strong className="text-slate-800">{r.quantity}</strong></span>
+                    <span className="font-mono text-[10px]">{new Date(r.createdAt).toLocaleDateString()}</span>
                   </div>
+                  {status === "Submitted" && (
+                    <p className="mt-2 text-[10px] text-amber-700 font-semibold">Awaiting procurement review</p>
+                  )}
                 </button>
               );
             })}
             {requests.length === 0 && !loading && (
-              <p className="p-8 text-center text-slate-400 text-sm">No pending requests for this department.</p>
+              <PremiumEmptyState
+                icon={Inbox}
+                title="No pending requests"
+                description="No requests in this department queue right now."
+              />
             )}
           </div>
-        </div>
+        </PremiumPanel>
 
-        {/* Right Panel: Detail, History & Collection scheduler */}
-        <div className="lg:col-span-1 bg-white border border-slate-200 rounded-xl p-4 flex flex-col gap-4 min-h-[400px]">
+        {/* Detail panel */}
+        <PremiumPanel className="lg:col-span-4 min-h-[520px]" noPadding>
           {!selectedRequest ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-sm p-4 text-center">
-              <Clock className="w-8 h-8 opacity-45 mb-2" />
-              Select a request from the list to view employee details, history, and schedule pickup time.
-            </div>
+            <PremiumEmptyState
+              icon={Clock}
+              title="Select a request"
+              description="Choose a request from the list to view employee details, history, and schedule pickup time."
+            />
           ) : (
-            <div className="space-y-4 flex-1 flex flex-col justify-between">
-              <div className="space-y-3">
-                <div className="border-b pb-2">
-                  <h3 className="font-bold text-slate-800 text-base">Request details</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">#{selectedRequest.requestId} — {new Date(selectedRequest.createdAt).toLocaleString()}</p>
+            <div className="p-5 space-y-4 flex flex-col h-full min-h-[480px]">
+              <div className="pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-bold text-[#006039] font-mono">REQ-{selectedRequest.requestId}</span>
+                  <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${statusBadge(selectedRequest.status)}`}>
+                    {requestStatusLabel(selectedRequest.status)}
+                  </span>
                 </div>
-                <div className="text-xs space-y-1.5 bg-slate-50 p-2.5 rounded-lg border">
-                  <p><span className="font-bold text-slate-600">Material:</span> {selectedRequest.materialName}</p>
-                  <p><span className="font-bold text-slate-600">Part No:</span> {selectedRequest.partNumber}</p>
-                  <p><span className="font-bold text-slate-600">Qty requested:</span> {selectedRequest.quantity}</p>
-                  <p><span className="font-bold text-slate-600">Work order:</span> {selectedRequest.aircraftOrWorkOrder || "—"}</p>
-                  <p><span className="font-bold text-slate-600">Requested by:</span> {selectedRequest.requestedByName}</p>
-                  {selectedRequest.notes && <p><span className="font-bold text-slate-600">Notes:</span> {selectedRequest.notes}</p>}
-                </div>
+                <h3 className="font-bold text-slate-800 text-base">{selectedRequest.materialName}</h3>
+                <p className="text-xs text-slate-400 mt-0.5">{new Date(selectedRequest.createdAt).toLocaleString()}</p>
+              </div>
 
-                <div className="space-y-2">
-                  <p className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                    <History className="w-3.5 h-3.5" /> Requester History ({employeeHistory.length})
-                  </p>
-                  <div className="border rounded-lg max-h-[140px] overflow-y-auto divide-y divide-slate-100 text-xs">
-                    {historyLoading ? (
-                      <p className="p-3 text-center text-slate-400">Loading history...</p>
-                    ) : employeeHistory.length === 0 ? (
-                      <p className="p-3 text-center text-slate-400">No prior requests found.</p>
-                    ) : (
-                      employeeHistory.map((h) => (
-                        <div key={h.requestId} className="p-2 flex justify-between gap-2 items-center hover:bg-slate-50">
-                          <div className="min-w-0">
-                            <p className="font-semibold text-slate-850 truncate">{h.partNumber} — {h.materialName}</p>
-                            <p className="text-[10px] text-slate-400">Qty: {h.quantity} · {new Date(h.createdAt).toLocaleDateString()}</p>
-                          </div>
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0 font-medium">{requestStatusLabel(h.status)}</span>
+              <div className="text-xs space-y-2 bg-gradient-to-br from-slate-50 to-white p-4 rounded-xl border border-slate-100">
+                <p><span className="font-bold text-slate-500">Part No</span> <span className="text-slate-800">{selectedRequest.partNumber}</span></p>
+                <p><span className="font-bold text-slate-500">Qty requested</span> <span className="text-slate-800 font-bold">{selectedRequest.quantity}</span></p>
+                <p><span className="font-bold text-slate-500">Work order</span> <span className="text-slate-800">{selectedRequest.aircraftOrWorkOrder || "—"}</span></p>
+                <p><span className="font-bold text-slate-500">Requested by</span> <span className="text-slate-800">{selectedRequest.requestedByName}</span></p>
+                {selectedRequest.notes && (
+                  <p className="pt-2 border-t border-slate-200/80"><span className="font-bold text-slate-500">Notes</span> <span className="text-slate-700 italic">{selectedRequest.notes}</span></p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-[#006039]" /> Requester history ({employeeHistory.length})
+                </p>
+                <div className="premium-surface border-0 shadow-none max-h-[140px] overflow-y-auto divide-y divide-slate-100">
+                  {historyLoading ? (
+                    <p className="p-4 text-center text-slate-400 text-xs">Loading history…</p>
+                  ) : employeeHistory.length === 0 ? (
+                    <p className="p-4 text-center text-slate-400 text-xs">No prior requests found.</p>
+                  ) : (
+                    employeeHistory.map((h) => (
+                      <div key={h.requestId} className="p-2.5 flex justify-between gap-2 items-center hover:bg-slate-50/80 transition-colors">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-800 truncate text-xs">{h.partNumber} — {h.materialName}</p>
+                          <p className="text-[10px] text-slate-400">Qty: {h.quantity} · {new Date(h.createdAt).toLocaleDateString()}</p>
                         </div>
-                      ))
-                    )}
-                  </div>
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 shrink-0 font-medium">{requestStatusLabel(h.status)}</span>
+                      </div>
+                    ))
+                  )}
                 </div>
+              </div>
 
-                <div className="space-y-2 pt-2 border-t">
-                  <label className="text-xs font-bold text-slate-700 block">Scheduled Pickup Time (Optional)</label>
+              {!showRejectForm ? (
+                <div className="space-y-3 pt-2 border-t border-slate-100">
+                  <label className="text-xs font-bold text-slate-700 block">Scheduled pickup time (optional)</label>
                   <input
                     type="datetime-local"
                     value={pickupTime}
                     onChange={(e) => setPickupTime(e.target.value)}
-                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs w-full focus:outline-none focus:ring-1 focus:ring-[#006039]"
+                    className={`${premiumInput} text-xs w-full`}
                   />
-                  <label className="text-xs font-bold text-slate-700 block mt-2">Notes / Reason</label>
+                  <label className="text-xs font-bold text-slate-700 block">Pickup instructions (optional)</label>
                   <textarea
-                    placeholder="Provide pick-up instructions or reject reason..."
+                    placeholder="Provide instructions on where/how to collect the material..."
                     value={readyNotes}
                     onChange={(e) => setReadyNotes(e.target.value)}
-                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs w-full h-16 resize-none focus:outline-none focus:ring-1 focus:ring-[#006039]"
+                    className={`${premiumInput} text-xs w-full h-16 resize-none`}
                   />
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-2 pt-2 border-t border-rose-100 bg-rose-50/30 -mx-1 px-1 rounded-xl">
+                  <label className="text-xs font-bold text-rose-800 block">Rejection reason</label>
+                  <textarea
+                    placeholder="Explain why this request is being rejected..."
+                    value={rejectNotes}
+                    onChange={(e) => setRejectNotes(e.target.value)}
+                    className="border border-rose-200 rounded-xl px-3 py-2 text-xs w-full h-20 resize-none focus:outline-none focus:ring-2 focus:ring-rose-300 bg-white"
+                  />
+                </div>
+              )}
 
-              <div className="flex gap-2 pt-4 mt-auto">
-                <button
-                  onClick={handleMarkReady}
-                  className="flex-1 text-xs px-3 py-2 bg-[#006039] text-white font-bold rounded-lg cursor-pointer hover:bg-[#004d2e] transition-colors"
-                >
-                  Confirm & Ready
-                </button>
-                <button
-                  onClick={handleReject}
-                  className="text-xs px-3 py-2 bg-rose-100 text-rose-800 font-bold rounded-lg cursor-pointer hover:bg-rose-200 transition-colors"
-                >
-                  Reject
-                </button>
+              <div className="flex gap-2 pt-2 mt-auto">
+                {!showRejectForm ? (
+                  <>
+                    <button type="button" onClick={handleMarkReady} className={`${premiumBtnPrimary} flex-1 text-xs`}>
+                      Confirm & ready
+                    </button>
+                    <button type="button" onClick={() => setShowRejectForm(true)} className={`${premiumBtnDanger} text-xs`}>
+                      Reject
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" onClick={handleReject} className="flex-1 text-xs px-3 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl cursor-pointer transition-colors shadow-sm">
+                      Confirm rejection
+                    </button>
+                    <button type="button" onClick={() => setShowRejectForm(false)} className="text-xs px-3 py-2.5 border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl cursor-pointer transition-colors">
+                      Back
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
-        </div>
+        </PremiumPanel>
       </div>
     </div>
   );

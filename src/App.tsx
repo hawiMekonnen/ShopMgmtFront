@@ -28,13 +28,15 @@ import {
   LogOut,
   ClipboardList,
   Bell,
-  Package
+  Package,
+  KeyRound
 } from "lucide-react";
 import { api, ApiError, setOnUnauthorized } from "./client";
 import { Category, Material, MaterialDetail, StockBatch, DashboardStats, ViewState, AuthSession, Shop, Alert } from "./types";
 import { startRealtimeHub, stopRealtimeHub, filterAlertsForRole, alertTypeLabel } from "./realtime";
 import ToastContainer, { ToastMessage } from "./components/Toast";
 import LoginView from "./components/LoginView";
+import ChangePasswordModal from "./components/ChangePasswordModal";
 import { MaterialSearchView, MaterialRequestsView, AlertsView, ProcurementInboxView } from "./components/AmosWorkflowViews";
 import TeamManagementView from "./components/TeamManagementView";
 import ManagerOverviewView from "./components/ManagerOverviewView";
@@ -53,6 +55,8 @@ import AccessDenied from "./components/AccessDenied";
 
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(() => api.getSession());
+  const [showForcePasswordChange, setShowForcePasswordChange] = useState<boolean>(() => api.getSession()?.mustChangePassword ?? false);
+  const [showChangePassword, setShowChangePassword] = useState<boolean>(false);
   const [pendingRequestMaterialId, setPendingRequestMaterialId] = useState<number | null>(null);
 
   // Navigation Routing State — role-based home
@@ -99,6 +103,7 @@ export default function App() {
   const autoRefreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [activeAlertCount, setActiveAlertCount] = useState(0);
   const [alertsRefreshToken, setAlertsRefreshToken] = useState(0);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
 
   // Custom Toast helper
   const addToast = useCallback((type: "success" | "error" | "warning" | "info", title: string, message?: string) => {
@@ -208,8 +213,6 @@ export default function App() {
           await loadAllCategories();
           setLoading(false);
           break;
-        case "stock-by-shop":
-          break;
         default:
           break;
       }
@@ -229,20 +232,36 @@ export default function App() {
     }
   }, [session, permissions?.canViewAlerts]);
 
+  const refreshPendingApprovalCount = useCallback(async () => {
+    if (!session || normalizeRole(session.role) !== "Manager") return;
+    try {
+      const reqs = await api.getMaterialRequests(session.shopId);
+      const count = reqs.filter((r: any) => {
+        const s = String(r.status);
+        return s === "PendingManagerApproval" || s === "6";
+      }).length;
+      setPendingApprovalCount(count);
+    } catch {
+      // ignore
+    }
+  }, [session]);
+
   useEffect(() => {
     if (!session?.token) return;
 
     refreshAlertCount();
+    refreshPendingApprovalCount();
 
     const handleAlert = (alert: Alert) => {
       if (session.role === "Technician" && alert.type === "NewMaterialAdded") return;
       if (!filterAlertsForRole([alert], session.role, session.userId, session.shopId).length) return;
       setActiveAlertCount((c) => c + 1);
       setAlertsRefreshToken((t) => t + 1);
+      refreshPendingApprovalCount();
       addToast(
         "info",
         alertTypeLabel(alert.type),
-        alert.note ?? `${alert.materialName}${alert.requestId ? ` (request #${alert.requestId})` : ""}`
+        alert.note ?? `${alert.materialName}${alert.requestId ? ` (request REQ-${alert.requestId})` : ""}`
       );
     };
 
@@ -267,7 +286,7 @@ export default function App() {
     return () => {
       stopRealtimeHub();
     };
-  }, [session?.token, session?.role, refreshAlertCount, addToast]);
+  }, [session?.token, session?.role, refreshAlertCount, refreshPendingApprovalCount, addToast]);
 
   useEffect(() => {
     setOnUnauthorized(() => {
@@ -337,6 +356,19 @@ export default function App() {
   const handleLogin = (s: AuthSession) => {
     setSession(s);
     setCurrentView(getDefaultView(s.role));
+    if (s.mustChangePassword) {
+      setShowForcePasswordChange(true);
+    }
+  };
+
+  const handleForcePasswordChangeDone = () => {
+    if (session) {
+      const updated = { ...session, mustChangePassword: false };
+      setSession(updated);
+      sessionStorage.setItem("authMustChangePassword", "0");
+    }
+    setShowForcePasswordChange(false);
+    addToast("success", "Password changed successfully", "You can now continue.");
   };
 
   if (!session) {
@@ -368,8 +400,16 @@ export default function App() {
             <span className="text-[10px] bg-black/25 px-2 py-0.5 rounded font-mono">{session.role}</span>
             <button
               type="button"
+              onClick={() => setShowChangePassword(true)}
+              className="text-xs flex items-center gap-1 text-emerald-100 hover:text-white cursor-pointer"
+              title="Change password"
+            >
+              <KeyRound className="w-3.5 h-3.5" /> Change Password
+            </button>
+            <button
+              type="button"
               onClick={() => { api.logout(); setSession(null); }}
-              className="text-xs flex items-center gap-1 text-emerald-100 hover:text-white"
+              className="text-xs flex items-center gap-1 text-emerald-100 hover:text-white cursor-pointer"
               title="Sign out"
             >
               <LogOut className="w-3.5 h-3.5" /> Logout
@@ -421,6 +461,7 @@ export default function App() {
           onNavigate={navigate}
           lastUpdated={lastUpdated}
           alertBadgeCount={permissions?.canViewAlerts ? activeAlertCount : 0}
+          pendingApprovalCount={normalizeRole(session.role) === "Manager" ? pendingApprovalCount : 0}
         />
 
         {/* 4. Main Page Body Outlet */}
@@ -529,6 +570,7 @@ export default function App() {
               addToast={addToast}
               executeApiCall={executeApiCall}
               initialMaterialId={pendingRequestMaterialId}
+              onStockChanged={loadAllMaterials}
             />
           )}
 
@@ -637,6 +679,24 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {/* Force Change Password Modal */}
+      {showForcePasswordChange && session && (
+        <ChangePasswordModal
+          required
+          onDone={handleForcePasswordChangeDone}
+        />
+      )}
+      {/* Change Password Modal */}
+      {showChangePassword && session && (
+        <ChangePasswordModal
+          required={false}
+          onDone={() => {
+            setShowChangePassword(false);
+            addToast("success", "Password changed successfully");
+          }}
+          onCancel={() => setShowChangePassword(false)}
+        />
       )}
     </div>
   );
@@ -1073,7 +1133,7 @@ function DashboardView({ stats, loading, onNavigate, onRefresh, permissions, rol
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => onNavigate({ type: "stock-by-shop" })}
+                onClick={() => onNavigate({ type: "materials" })}
                 className="px-3.5 py-1.5 bg-[#006039] hover:bg-[#004d2e] text-white text-xs font-semibold rounded-lg cursor-pointer"
               >
                 View Stock by Shop

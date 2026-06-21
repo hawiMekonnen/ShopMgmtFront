@@ -186,7 +186,7 @@ export default function UserAdminView({ session, onNavigate, executeApiCall }: U
                 ) : (
                   requests.map(r => (
                     <tr key={`print-req-${r.requestId}`} className="border-b border-slate-200">
-                      <td className="py-2 px-3 font-mono">#{r.requestId}</td>
+                      <td className="py-2 px-3 font-mono">REQ-{r.requestId}</td>
                       <td className="py-2 px-3 font-medium">{r.materialName}</td>
                       <td className="py-2 px-3 font-mono">{r.partNumber}</td>
                       <td className="py-2 px-3 text-right">{r.quantity}</td>
@@ -227,7 +227,7 @@ export default function UserAdminView({ session, onNavigate, executeApiCall }: U
                 ) : (
                   requests.map(r => (
                     <tr key={`print-dept-req-${r.requestId}`} className="border-b border-slate-200">
-                      <td className="py-2 px-3 font-mono">#{r.requestId}</td>
+                      <td className="py-2 px-3 font-mono">REQ-{r.requestId}</td>
                       <td className="py-2 px-3">{r.requestedByName}</td>
                       <td className="py-2 px-3 font-medium">{r.materialName}</td>
                       <td className="py-2 px-3 font-mono">{r.partNumber}</td>
@@ -650,7 +650,7 @@ export default function UserAdminView({ session, onNavigate, executeApiCall }: U
                           ) : (
                             requests.slice(0, 15).map(r => (
                               <tr key={`req-row-${r.requestId}`} className="hover:bg-slate-50/50">
-                                <td className="py-2 px-3 font-mono text-slate-500">#{r.requestId}</td>
+                                <td className="py-2 px-3 font-mono text-slate-500">REQ-{r.requestId}</td>
                                 <td className="py-2 px-3">
                                   <span className="font-semibold text-slate-700 block">{r.materialName}</span>
                                   <span className="text-[10px] text-slate-400 font-mono">{r.partNumber}</span>

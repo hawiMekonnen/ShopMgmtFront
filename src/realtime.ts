@@ -98,6 +98,8 @@ export function alertTypeLabel(type: string): string {
       return "Quarantine review";
     case "NewMaterialAdded":
       return "New material";
+    case "RequestEdited":
+      return "Request edited";
     default:
       return type;
   }

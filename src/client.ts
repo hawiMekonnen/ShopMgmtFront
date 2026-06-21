@@ -388,6 +388,12 @@ export const api = {
       body: JSON.stringify({ notes }),
     }).then(adaptRequest),
 
+  editMaterialRequest: (id: number, data: { quantity: number; aircraftOrWorkOrder: string; notes?: string }) =>
+    request<any>(`/api/materialrequests/${id}/edit`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }).then(adaptRequest),
+
   getAlerts: () =>
     request<any[]>("/api/alerts").then((items) =>
       items.map(
